@@ -1,0 +1,14 @@
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Local build artifacts
+DerivedData/
+build/
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
