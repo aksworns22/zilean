@@ -275,7 +275,10 @@ final class CodexAppServerClient: CodexAppServerServing {
             var decoder = JSONLMessageDecoder()
 
             do {
-                while !Task.isCancelled, let data = try output.read(upToCount: 4096), !data.isEmpty {
+                while !Task.isCancelled {
+                    let data = output.availableData
+                    guard !data.isEmpty else { break }
+
                     let messages = try decoder.append(data)
                     for message in messages {
                         await self?.receive(message)
@@ -292,12 +295,11 @@ final class CodexAppServerClient: CodexAppServerServing {
         }
 
         errorReaderTask = Task.detached { [weak self] in
-            do {
-                while !Task.isCancelled, let data = try error.read(upToCount: 2048), !data.isEmpty {
-                    await self?.appendStandardError(data)
-                }
-            } catch {
-                // Closing the pipe during normal shutdown interrupts the read.
+            while !Task.isCancelled {
+                let data = error.availableData
+                guard !data.isEmpty else { break }
+
+                await self?.appendStandardError(data)
             }
         }
     }
