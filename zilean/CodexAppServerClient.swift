@@ -196,7 +196,7 @@ final class CodexAppServerClient: CodexAppServerServing {
             params: [
                 "cwd": .string(directory.path),
                 "approvalPolicy": .string("never"),
-                "sandbox": .string("readOnly"),
+                "sandbox": .string("read-only"),
             ]
         )
 
