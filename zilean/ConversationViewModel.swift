@@ -79,6 +79,10 @@ final class ConversationViewModel: ObservableObject {
         selectedDirectory != nil && client.isConnected && !phase.isBusy
     }
 
+    var hasConversation: Bool {
+        threadID != nil
+    }
+
     var canSend: Bool {
         threadID != nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !phase.isBusy
     }

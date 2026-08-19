@@ -78,9 +78,41 @@ struct CodexExecutableLocator {
             "\(home)/.bun/bin/codex",
         ])
 
-        return candidates.lazy
+        let candidate = candidates.lazy
             .map { URL(fileURLWithPath: $0).standardizedFileURL }
-            .first { fileManager.isExecutableFile(atPath: $0.path) }
+            .first(where: { fileManager.isExecutableFile(atPath: $0.path) })
+        if let candidate {
+            return candidate
+        }
+
+        return locateUsingLoginShell()
+    }
+
+    private static func locateUsingLoginShell() -> URL? {
+        let process = Process()
+        let output = Pipe()
+
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lic", "command -v codex"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let lines = String(decoding: data, as: UTF8.self)
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+
+            guard let path = lines.last else { return nil }
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -349,6 +381,7 @@ final class CodexAppServerClient: CodexAppServerServing {
         let message = CodexAppServerError.protocolFailure(error.localizedDescription).localizedDescription
         responseRouter.failAll(with: CodexAppServerError.protocolFailure(error.localizedDescription))
         onEvent?(.protocolError(message: message))
+        stop()
     }
 
     private func appendStandardError(_ data: Data) {
