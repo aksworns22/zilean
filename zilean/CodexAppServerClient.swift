@@ -58,6 +58,8 @@ protocol CodexAppServerServing: AnyObject {
 }
 
 struct CodexExecutableLocator {
+    private static let defaultPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
     static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         let fileManager = FileManager.default
         var candidates: [String] = []
@@ -86,6 +88,22 @@ struct CodexExecutableLocator {
         }
 
         return locateUsingLoginShell()
+    }
+
+    static func processEnvironment(
+        for executableURL: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var processEnvironment = environment
+        let executableDirectory = executableURL.deletingLastPathComponent().path
+        let inheritedPath = environment["PATH"] ?? defaultPath
+        var pathComponents = inheritedPath.split(separator: ":").map(String.init)
+
+        pathComponents.removeAll { $0 == executableDirectory }
+        pathComponents.insert(executableDirectory, at: 0)
+        processEnvironment["PATH"] = pathComponents.joined(separator: ":")
+
+        return processEnvironment
     }
 
     private static func locateUsingLoginShell() -> URL? {
@@ -149,6 +167,7 @@ final class CodexAppServerClient: CodexAppServerServing {
 
         process.executableURL = executableURL
         process.arguments = ["app-server", "--stdio"]
+        process.environment = CodexExecutableLocator.processEnvironment(for: executableURL)
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
