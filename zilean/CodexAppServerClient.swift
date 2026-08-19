@@ -46,6 +46,17 @@ enum CodexAppServerError: LocalizedError {
     }
 }
 
+@MainActor
+protocol CodexAppServerServing: AnyObject {
+    var onEvent: ((AppServerEvent) -> Void)? { get set }
+    var isConnected: Bool { get }
+
+    func connect() async throws
+    func startThread(in directory: URL) async throws -> String
+    func startTurn(threadID: String, text: String) async throws -> String
+    func stop()
+}
+
 struct CodexExecutableLocator {
     static func locate(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
         let fileManager = FileManager.default
@@ -74,7 +85,7 @@ struct CodexExecutableLocator {
 }
 
 @MainActor
-final class CodexAppServerClient {
+final class CodexAppServerClient: CodexAppServerServing {
     var onEvent: ((AppServerEvent) -> Void)?
 
     private var process: Process?
