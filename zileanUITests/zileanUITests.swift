@@ -23,14 +23,15 @@ final class zileanUITests: XCTestCase {
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testWorkspaceLayoutAppears() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        XCTAssertTrue(app.buttons["새 작업"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["돌아보기"].exists)
+        XCTAssertTrue(app.staticTexts["오늘은 어떤 작업을 시작할까요?"].exists)
+        XCTAssertTrue(app.buttons["작업 폴더 선택"].exists)
+        XCTAssertTrue(app.buttons["메시지 보내기"].exists)
     }
 
     @MainActor
