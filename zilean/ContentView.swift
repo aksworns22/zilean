@@ -84,7 +84,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 62)
+        .padding(.top, 46)
         .padding(.bottom, 18)
     }
 
@@ -105,9 +105,9 @@ struct ContentView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .foregroundStyle(isSelected ? DesignPalette.sidebarActiveText : Color.secondary)
         .background(
-            isSelected ? Color.accentColor.opacity(0.09) : Color.clear,
+            isSelected ? DesignPalette.sidebarSelection : Color.clear,
             in: RoundedRectangle(cornerRadius: 9, style: .continuous)
         )
     }
@@ -135,7 +135,8 @@ struct ContentView: View {
                                 WorkSessionSummary(
                                     work: work,
                                     now: context.date,
-                                    showsDetails: false
+                                    showsDetails: false,
+                                    isActive: isSelected(work)
                                 )
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -145,7 +146,7 @@ struct ContentView: View {
                             .disabled(viewModel.phase.isBusy)
                             .background(
                                 isSelected(work)
-                                    ? Color.accentColor.opacity(0.07)
+                                    ? DesignPalette.sidebarSelection
                                     : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                             )
@@ -510,6 +511,16 @@ private enum DesignPalette {
         blue: 246.0 / 255.0
     )
     static let sidebarBorder = Color.black.opacity(0.06)
+    static let sidebarSelection = Color(
+        red: 226.0 / 255.0,
+        green: 237.0 / 255.0,
+        blue: 238.0 / 255.0
+    )
+    static let sidebarActiveText = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
     static let agentBubble = Color(
         red: 238.0 / 255.0,
         green: 243.0 / 255.0,
@@ -536,12 +547,13 @@ private struct WorkSessionSummary: View {
     let work: WorkSession
     let now: Date
     let showsDetails: Bool
+    var isActive = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: showsDetails ? 7 : 3) {
             Text(work.title)
                 .font(.callout.weight(.medium))
-                .foregroundStyle(.primary)
+                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.primary)
                 .lineLimit(1)
 
             if showsDetails {
@@ -557,7 +569,7 @@ private struct WorkSessionSummary: View {
 
             Text(elapsedDescription(since: work.startedAt, now: now))
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
