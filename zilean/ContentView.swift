@@ -11,18 +11,19 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = ConversationViewModel()
+    @State private var selectedDestination: SidebarDestination = .newWork
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            workspaceBar
-            Divider()
-            conversation
-            Divider()
-            composer
+        HStack(spacing: 0) {
+            sidebar
+            Rectangle()
+                .fill(DesignPalette.sidebarBorder)
+                .frame(width: 1)
+            workspace
         }
-        .frame(minWidth: 760, minHeight: 560)
+        .frame(minWidth: 800, minHeight: 560)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .ignoresSafeArea(.container, edges: .top)
         .task {
             await viewModel.connect()
         }
@@ -34,91 +35,237 @@ struct ContentView: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "hourglass")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(.tint)
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            brand
+
+            VStack(spacing: 4) {
+                navigationButton(
+                    title: "새 작업",
+                    systemImage: "square.and.pencil",
+                    destination: .newWork,
+                    action: startNewWork
+                )
+                .disabled(viewModel.phase.isBusy)
+
+                navigationButton(
+                    title: "돌아보기",
+                    systemImage: "clock.arrow.circlepath",
+                    destination: .review
+                ) {
+                    selectedDestination = .review
+                }
+            }
+            .padding(.horizontal, 12)
+
+            recentWork
+
+            Spacer(minLength: 20)
+        }
+        .frame(width: 224)
+        .background(DesignPalette.sidebarBackground)
+    }
+
+    private var brand: some View {
+        HStack(spacing: 10) {
+            Image("ZileanAvatar")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 32, height: 32)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Zilean")
-                    .font(.headline)
-                Text("로컬 Codex 대화")
-                    .font(.caption)
+                    .font(.subheadline.weight(.semibold))
+                Text("the Chronokeeper")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 46)
+        .padding(.bottom, 18)
+    }
+
+    private func navigationButton(
+        title: String,
+        systemImage: String,
+        destination: SidebarDestination,
+        action: @escaping () -> Void
+    ) -> some View {
+        let isSelected = selectedDestination == destination
+
+        return Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.callout.weight(isSelected ? .semibold : .regular))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 9)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? DesignPalette.sidebarActiveText : Color.secondary)
+        .background(
+            isSelected ? DesignPalette.sidebarSelection : Color.clear,
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+    }
+
+    private var recentWork: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("최근 작업")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 12)
+
+            if viewModel.recentWorkSessions.isEmpty {
+                Text("아직 최근 작업이 없어요")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+            } else {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    VStack(spacing: 2) {
+                        ForEach(viewModel.recentWorkSessions.prefix(5)) { work in
+                            Button {
+                                open(work)
+                            } label: {
+                                WorkSessionSummary(
+                                    work: work,
+                                    now: context.date,
+                                    showsDetails: false,
+                                    isActive: isSelected(work)
+                                )
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.phase.isBusy)
+                            .background(
+                                isSelected(work)
+                                    ? DesignPalette.sidebarSelection
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 22)
+    }
+
+    private var workspace: some View {
+        VStack(spacing: 0) {
+            workspaceStatus
+
+            Group {
+                switch selectedDestination {
+                case .review:
+                    reviewPlaceholder
+                case .newWork, .currentWork:
+                    conversation
+                }
+            }
+
+            composer
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var workspaceStatus: some View {
+        HStack {
+            if let directory = viewModel.selectedDirectory {
+                Button {
+                    startNewWork(choosingDirectory: true)
+                } label: {
+                    Label(directory.lastPathComponent, systemImage: "folder")
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("다른 작업 폴더 선택")
             }
 
             Spacer()
-
-            if viewModel.phase.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            StatusBadge(phase: viewModel.phase)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 22)
+        .padding(.top, 16)
+        .frame(height: 52, alignment: .top)
     }
 
-    private var workspaceBar: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "folder")
+    @ViewBuilder
+    private var reviewPlaceholder: some View {
+        if viewModel.recentWorkSessions.isEmpty {
+            VStack(spacing: 8) {
+                Text("아직 돌아볼 작업이 없어요")
+                    .font(.title2.weight(.semibold))
+                Text("새 작업을 시작하면 이곳에서 다시 열 수 있어요.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(viewModel.selectedDirectory?.lastPathComponent ?? "작업 폴더를 선택하세요")
-                        .lineLimit(1)
-                    if let path = viewModel.selectedDirectory?.path {
-                        Text(path)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-
-                Spacer()
-
-                Button("폴더 선택", systemImage: "folder.badge.plus") {
-                    chooseDirectory()
-                }
-
-                Button("새 대화", systemImage: "plus.bubble") {
-                    Task { await viewModel.createConversation() }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!viewModel.canCreateConversation)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("돌아보기")
+                                .font(.title2.weight(.semibold))
+                            Text("이 앱을 사용하는 동안 시작한 작업을 다시 열 수 있어요.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.bottom, 6)
 
-            if let detail = viewModel.phase.detail {
-                ErrorBanner(
-                    message: detail,
-                    showsRetry: viewModel.canRetryConnection,
-                    retry: { Task { await viewModel.connect() } }
-                )
+                        ForEach(viewModel.recentWorkSessions) { work in
+                            Button {
+                                open(work)
+                            } label: {
+                                WorkSessionSummary(
+                                    work: work,
+                                    now: context.date,
+                                    showsDetails: true
+                                )
+                                .padding(16)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.phase.isBusy)
+                            .background(
+                                Color(nsColor: .controlBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 680, alignment: .leading)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity)
+                }
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(.bar)
     }
 
     @ViewBuilder
     private var conversation: some View {
         if viewModel.messages.isEmpty {
-            ContentUnavailableView {
-                Label(
-                    viewModel.hasConversation ? "첫 메시지를 보내세요" : "새 대화를 시작하세요",
-                    systemImage: viewModel.hasConversation ? "bubble.left.and.bubble.right" : "folder.badge.plus"
-                )
-            } description: {
-                Text(
-                    viewModel.hasConversation
-                        ? "Codex 응답이 이곳에 실시간으로 표시됩니다."
-                        : "작업 폴더를 선택한 다음 새 대화를 만드세요."
-                )
+            VStack(spacing: 10) {
+                Text("오늘은 어떤 작업을 시작할까요?")
+                    .font(.title2.weight(.semibold))
+
+                Text(emptyStateDescription)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
@@ -130,7 +277,8 @@ struct ContentView: View {
                                 .id(message.id)
                         }
                     }
-                    .padding(20)
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 20)
                 }
                 .onChange(of: viewModel.messages) { _, messages in
                     guard let lastID = messages.last?.id else { return }
@@ -142,31 +290,85 @@ struct ContentView: View {
         }
     }
 
-    private var composer: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField("Codex에 메시지 보내기", text: $viewModel.draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-                .disabled(!viewModel.hasConversation || viewModel.phase.isBusy)
-                .onSubmit(sendMessage)
-
-            Button(action: sendMessage) {
-                Image(systemName: "arrow.up")
-                    .font(.body.weight(.bold))
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.borderedProminent)
-            .clipShape(Circle())
-            .disabled(!viewModel.canSend)
-            .help("메시지 보내기")
+    private var emptyStateDescription: String {
+        if viewModel.hasConversation {
+            "질리언에게 메시지를 보내 작업을 시작하세요."
+        } else if viewModel.selectedDirectory == nil {
+            "새 작업을 눌러 작업 폴더를 선택하세요."
+        } else {
+            "새 작업을 눌러 대화를 시작하세요."
         }
-        .padding(16)
     }
 
-    private func chooseDirectory() {
+    private var composer: some View {
+        VStack(spacing: 10) {
+            if let detail = viewModel.phase.detail {
+                ErrorBanner(
+                    message: detail,
+                    showsRetry: viewModel.canRetryConnection,
+                    retry: { Task { await viewModel.connect() } }
+                )
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    startNewWork(choosingDirectory: true)
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.body.weight(.medium))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(viewModel.phase.isBusy)
+                .accessibilityLabel("작업 폴더 선택")
+                .help("새 작업 폴더 선택")
+
+                TextField("질리언에게 메시지 보내기", text: $viewModel.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .lineLimit(1...6)
+                    .padding(.vertical, 7)
+                    .disabled(
+                        selectedDestination == .review
+                            || !viewModel.hasConversation
+                            || viewModel.phase.isBusy
+                    )
+                    .onSubmit(sendMessage)
+
+                Button(action: sendMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.body.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(DesignPalette.userBubble, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSendMessage)
+                .opacity(canSendMessage ? 1 : 0.35)
+                .accessibilityLabel("메시지 보내기")
+                .help("메시지 보내기")
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+            }
+        }
+        .frame(maxWidth: 680)
+        .padding(.horizontal, 32)
+        .padding(.top, 10)
+        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity)
+    }
+
+    @discardableResult
+    private func chooseDirectory() -> Bool {
         let panel = NSOpenPanel()
         panel.title = "Codex 작업 폴더 선택"
         panel.prompt = "선택"
@@ -174,47 +376,57 @@ struct ContentView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
 
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard panel.runModal() == .OK, let url = panel.url else { return false }
         viewModel.selectDirectory(url)
+        return true
+    }
+
+    private func startNewWork() {
+        startNewWork(choosingDirectory: viewModel.selectedDirectory == nil)
+    }
+
+    private func startNewWork(choosingDirectory: Bool) {
+        selectedDestination = .newWork
+
+        if choosingDirectory, !chooseDirectory() {
+            return
+        }
+
+        guard viewModel.selectedDirectory != nil else { return }
+
+        Task {
+            await viewModel.createConversation()
+            if viewModel.hasConversation {
+                selectedDestination = .currentWork
+            }
+        }
     }
 
     private func sendMessage() {
-        guard viewModel.canSend else { return }
+        guard canSendMessage else { return }
         Task { await viewModel.sendMessage() }
     }
+
+    private func open(_ work: WorkSession) {
+        guard !viewModel.phase.isBusy else { return }
+        viewModel.selectWork(id: work.id)
+        selectedDestination = .currentWork
+    }
+
+    private func isSelected(_ work: WorkSession) -> Bool {
+        selectedDestination == .currentWork && viewModel.activeWorkID == work.id
+    }
+
+    private var canSendMessage: Bool {
+        selectedDestination != .review && viewModel.canSend
+    }
+
 }
 
-private struct StatusBadge: View {
-    let phase: ConversationPhase
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(phase.title)
-                .font(.caption.weight(.medium))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.12), in: Capsule())
-        .foregroundStyle(color)
-    }
-
-    private var color: Color {
-        switch phase {
-        case .failed:
-            .red
-        case .completed:
-            .green
-        case .responding, .connecting, .creatingConversation:
-            .orange
-        case .ready, .idle:
-            .blue
-        case .disconnected:
-            .secondary
-        }
-    }
+private enum SidebarDestination {
+    case newWork
+    case review
+    case currentWork
 }
 
 private struct ErrorBanner: View {
@@ -242,32 +454,149 @@ private struct ErrorBanner: View {
 private struct MessageRow: View {
     let message: ConversationMessage
 
+    @ViewBuilder
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            if message.role == .user {
+        if message.role == .user {
+            HStack(alignment: .top) {
                 Spacer(minLength: 80)
-            } else {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(.tint)
-                    .frame(width: 24, height: 24)
+
+                messageBubble
             }
+            .frame(maxWidth: .infinity)
+        } else {
+            HStack(alignment: .top, spacing: 10) {
+                Image("ZileanAvatar")
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 28, height: 28)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .accessibilityHidden(true)
 
-            Text(message.text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("질리언")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DesignPalette.agentName)
 
-            if message.role == .agent {
+                    messageBubble
+                }
+
                 Spacer(minLength: 80)
             }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    private var messageBubble: some View {
+        Text(message.text)
+            .foregroundStyle(textColor)
+            .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(
+                bubbleColor,
+                in: UnevenRoundedRectangle(
+                    topLeadingRadius: message.role == .agent ? 8 : 14,
+                    bottomLeadingRadius: 14,
+                    bottomTrailingRadius: 14,
+                    topTrailingRadius: message.role == .user ? 8 : 14,
+                    style: .continuous
+                )
+            )
     }
 
     private var bubbleColor: Color {
-        message.role == .user ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12)
+        message.role == .user ? DesignPalette.userBubble : DesignPalette.agentBubble
     }
+
+    private var textColor: Color {
+        message.role == .user ? .white : DesignPalette.agentText
+    }
+}
+
+private enum DesignPalette {
+    static let sidebarBackground = Color(
+        red: 241.0 / 255.0,
+        green: 245.0 / 255.0,
+        blue: 246.0 / 255.0
+    )
+    static let sidebarBorder = Color.black.opacity(0.06)
+    static let sidebarSelection = Color(
+        red: 226.0 / 255.0,
+        green: 237.0 / 255.0,
+        blue: 238.0 / 255.0
+    )
+    static let sidebarActiveText = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
+    static let agentBubble = Color(
+        red: 238.0 / 255.0,
+        green: 243.0 / 255.0,
+        blue: 244.0 / 255.0
+    )
+    static let agentText = Color(
+        red: 18.0 / 255.0,
+        green: 38.0 / 255.0,
+        blue: 43.0 / 255.0
+    )
+    static let agentName = Color(
+        red: 101.0 / 255.0,
+        green: 127.0 / 255.0,
+        blue: 132.0 / 255.0
+    )
+    static let userBubble = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
+}
+
+private struct WorkSessionSummary: View {
+    let work: WorkSession
+    let now: Date
+    let showsDetails: Bool
+    var isActive = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: showsDetails ? 7 : 3) {
+            Text(work.title)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.primary)
+                .lineLimit(1)
+
+            if showsDetails {
+                HStack(spacing: 6) {
+                    Label(work.directory.lastPathComponent, systemImage: "folder")
+                    Text("·")
+                    Text("메시지 \(work.messages.count)개")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Text(elapsedDescription(since: work.startedAt, now: now))
+                .font(.caption2)
+                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func elapsedDescription(since startDate: Date, now: Date) -> String {
+    let elapsedMinutes = max(0, Int(now.timeIntervalSince(startDate) / 60))
+
+    if elapsedMinutes == 0 {
+        return "방금 시작"
+    }
+    if elapsedMinutes < 60 {
+        return "\(elapsedMinutes)분 진행"
+    }
+
+    let hours = elapsedMinutes / 60
+    let minutes = elapsedMinutes % 60
+    return minutes == 0 ? "\(hours)시간 진행" : "\(hours)시간 \(minutes)분 진행"
 }
 
 #Preview {
