@@ -69,3 +69,7 @@ UI 테스트를 포함한 전체 테스트는 `-only-testing:zileanTests` 옵션
 5. 1단계와 비교해 Zilean이 시작한 새 app-server 프로세스가 남지 않았는지 확인합니다.
 
 빌드 산출물과 Xcode 사용자별 설정은 `.gitignore`에 의해 버전 관리에서 제외됩니다.
+
+## 질리언이 질리 없어!
+
+![질리언이 질리 없어!](docs/zilean-is-not-boring.png)
