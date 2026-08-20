@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct zileanApp: App {
+struct ZileanApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
