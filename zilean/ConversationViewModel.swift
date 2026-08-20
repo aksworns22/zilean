@@ -18,6 +18,34 @@ struct ConversationMessage: Identifiable, Equatable {
     }
 }
 
+struct WorkSession: Identifiable, Equatable {
+    let id: UUID
+    let threadID: String
+    let directory: URL
+    var title: String
+    let startedAt: Date
+    var updatedAt: Date
+    var messages: [ConversationMessage]
+
+    init(
+        id: UUID = UUID(),
+        threadID: String,
+        directory: URL,
+        title: String,
+        startedAt: Date = .now,
+        updatedAt: Date = .now,
+        messages: [ConversationMessage] = []
+    ) {
+        self.id = id
+        self.threadID = threadID
+        self.directory = directory
+        self.title = title
+        self.startedAt = startedAt
+        self.updatedAt = updatedAt
+        self.messages = messages
+    }
+}
+
 enum ConversationPhase: Equatable {
     case disconnected
     case connecting
@@ -67,24 +95,40 @@ enum ConversationPhase: Equatable {
 @MainActor
 final class ConversationViewModel: ObservableObject {
     @Published private(set) var phase: ConversationPhase = .disconnected
-    @Published private(set) var messages: [ConversationMessage] = []
+    @Published private(set) var workSessions: [WorkSession] = []
+    @Published private(set) var activeWorkID: UUID?
     @Published private(set) var selectedDirectory: URL?
     @Published var draft = ""
 
     private let client: CodexAppServerServing
-    private var threadID: String?
     private var activeAgentItemID: String?
+
+    var activeWork: WorkSession? {
+        guard let activeWorkID else { return nil }
+        return workSessions.first { $0.id == activeWorkID }
+    }
+
+    var recentWorkSessions: [WorkSession] {
+        workSessions.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    var messages: [ConversationMessage] {
+        activeWork?.messages ?? []
+    }
 
     var canCreateConversation: Bool {
         selectedDirectory != nil && client.isConnected && !phase.isBusy
     }
 
     var hasConversation: Bool {
-        threadID != nil
+        activeWork != nil
     }
 
     var canSend: Bool {
-        threadID != nil && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !phase.isBusy
+        activeWork != nil
+            && client.isConnected
+            && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !phase.isBusy
     }
 
     var canRetryConnection: Bool {
@@ -104,7 +148,7 @@ final class ConversationViewModel: ObservableObject {
 
     func connect() async {
         guard !client.isConnected else {
-            if threadID == nil {
+            if activeWorkID == nil {
                 phase = .ready
             }
             return
@@ -128,8 +172,17 @@ final class ConversationViewModel: ObservableObject {
 
         phase = .creatingConversation
         do {
-            threadID = try await client.startThread(in: selectedDirectory)
-            messages.removeAll()
+            let threadID = try await client.startThread(in: selectedDirectory)
+            let now = Date.now
+            let session = WorkSession(
+                threadID: threadID,
+                directory: selectedDirectory,
+                title: selectedDirectory.lastPathComponent,
+                startedAt: now,
+                updatedAt: now
+            )
+            workSessions.append(session)
+            activeWorkID = session.id
             activeAgentItemID = nil
             draft = ""
             phase = .idle
@@ -140,11 +193,17 @@ final class ConversationViewModel: ObservableObject {
 
     func sendMessage() async {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let threadID, !text.isEmpty, !phase.isBusy else { return }
+        guard let activeWorkIndex, !text.isEmpty, !phase.isBusy, client.isConnected else { return }
+
+        let threadID = workSessions[activeWorkIndex].threadID
 
         draft = ""
         activeAgentItemID = nil
-        messages.append(ConversationMessage(role: .user, text: text))
+        if workSessions[activeWorkIndex].messages.isEmpty {
+            workSessions[activeWorkIndex].title = title(from: text)
+        }
+        workSessions[activeWorkIndex].messages.append(ConversationMessage(role: .user, text: text))
+        workSessions[activeWorkIndex].updatedAt = .now
         phase = .responding
 
         do {
@@ -154,9 +213,20 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
+    func selectWork(id: UUID) {
+        guard !phase.isBusy, let session = workSessions.first(where: { $0.id == id }) else { return }
+
+        activeWorkID = session.id
+        selectedDirectory = session.directory
+        activeAgentItemID = nil
+        draft = ""
+        if client.isConnected {
+            phase = .idle
+        }
+    }
+
     func shutdown() {
         client.stop()
-        threadID = nil
         activeAgentItemID = nil
         phase = .disconnected
     }
@@ -178,22 +248,39 @@ final class ConversationViewModel: ObservableObject {
             }
 
         case let .processExited(message), let .protocolError(message):
-            threadID = nil
             activeAgentItemID = nil
             phase = .failed(message)
         }
     }
 
     private func mergeAgentDelta(itemID: String, text: String) {
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty, let activeWorkIndex else { return }
 
         if activeAgentItemID == itemID,
-           let lastIndex = messages.indices.last,
-           messages[lastIndex].role == .agent {
-            messages[lastIndex].text.append(text)
+           let lastIndex = workSessions[activeWorkIndex].messages.indices.last,
+           workSessions[activeWorkIndex].messages[lastIndex].role == .agent {
+            workSessions[activeWorkIndex].messages[lastIndex].text.append(text)
         } else {
-            messages.append(ConversationMessage(role: .agent, text: text))
+            workSessions[activeWorkIndex].messages.append(ConversationMessage(role: .agent, text: text))
             activeAgentItemID = itemID
         }
+        workSessions[activeWorkIndex].updatedAt = .now
+    }
+
+    private var activeWorkIndex: Int? {
+        guard let activeWorkID else { return nil }
+        return workSessions.firstIndex { $0.id == activeWorkID }
+    }
+
+    private func title(from message: String) -> String {
+        let firstLine = message
+            .split(whereSeparator: \.isNewline)
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? message
+        let maximumLength = 28
+
+        guard firstLine.count > maximumLength else { return firstLine }
+        return String(firstLine.prefix(maximumLength)) + "…"
     }
 }

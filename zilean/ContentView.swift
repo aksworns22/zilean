@@ -118,38 +118,39 @@ struct ContentView: View {
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 12)
 
-            if viewModel.hasConversation, let directory = viewModel.selectedDirectory {
-                Button {
-                    selectedDestination = .currentWork
-                } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(directory.lastPathComponent)
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-
-                        Text(viewModel.phase.title)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .background(
-                    selectedDestination == .currentWork
-                        ? Color.accentColor.opacity(0.07)
-                        : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                )
-            } else {
+            if viewModel.recentWorkSessions.isEmpty {
                 Text("아직 최근 작업이 없어요")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 4)
+            } else {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    VStack(spacing: 2) {
+                        ForEach(viewModel.recentWorkSessions.prefix(5)) { work in
+                            Button {
+                                open(work)
+                            } label: {
+                                WorkSessionSummary(
+                                    work: work,
+                                    now: context.date,
+                                    showsDetails: false
+                                )
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.phase.isBusy)
+                            .background(
+                                isSelected(work)
+                                    ? Color.accentColor.opacity(0.07)
+                                    : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            )
+                        }
+                    }
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -227,15 +228,61 @@ struct ContentView: View {
         .frame(height: 52, alignment: .top)
     }
 
+    @ViewBuilder
     private var reviewPlaceholder: some View {
-        VStack(spacing: 8) {
-            Text("돌아보기")
-                .font(.title2.weight(.semibold))
-            Text("완료한 작업을 살펴보는 화면은 다음 단계에서 연결합니다.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
+        if viewModel.recentWorkSessions.isEmpty {
+            VStack(spacing: 8) {
+                Text("아직 돌아볼 작업이 없어요")
+                    .font(.title2.weight(.semibold))
+                Text("새 작업을 시작하면 이곳에서 다시 열 수 있어요.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("돌아보기")
+                                .font(.title2.weight(.semibold))
+                            Text("이 앱을 사용하는 동안 시작한 작업을 다시 열 수 있어요.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.bottom, 6)
+
+                        ForEach(viewModel.recentWorkSessions) { work in
+                            Button {
+                                open(work)
+                            } label: {
+                                WorkSessionSummary(
+                                    work: work,
+                                    now: context.date,
+                                    showsDetails: true
+                                )
+                                .padding(16)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(viewModel.phase.isBusy)
+                            .background(
+                                Color(nsColor: .controlBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: 680, alignment: .leading)
+                    .padding(.horizontal, 32)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: .infinity)
+                }
+            }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -389,6 +436,16 @@ struct ContentView: View {
         Task { await viewModel.sendMessage() }
     }
 
+    private func open(_ work: WorkSession) {
+        guard !viewModel.phase.isBusy else { return }
+        viewModel.selectWork(id: work.id)
+        selectedDestination = .currentWork
+    }
+
+    private func isSelected(_ work: WorkSession) -> Bool {
+        selectedDestination == .currentWork && viewModel.activeWorkID == work.id
+    }
+
     private var canSendMessage: Bool {
         selectedDestination != .review && viewModel.canSend
     }
@@ -491,6 +548,52 @@ private struct MessageRow: View {
     private var bubbleColor: Color {
         message.role == .user ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12)
     }
+}
+
+private struct WorkSessionSummary: View {
+    let work: WorkSession
+    let now: Date
+    let showsDetails: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: showsDetails ? 7 : 3) {
+            Text(work.title)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+
+            if showsDetails {
+                HStack(spacing: 6) {
+                    Label(work.directory.lastPathComponent, systemImage: "folder")
+                    Text("·")
+                    Text("메시지 \(work.messages.count)개")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+
+            Text(elapsedDescription(since: work.startedAt, now: now))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private func elapsedDescription(since startDate: Date, now: Date) -> String {
+    let elapsedMinutes = max(0, Int(now.timeIntervalSince(startDate) / 60))
+
+    if elapsedMinutes == 0 {
+        return "방금 시작"
+    }
+    if elapsedMinutes < 60 {
+        return "\(elapsedMinutes)분 진행"
+    }
+
+    let hours = elapsedMinutes / 60
+    let minutes = elapsedMinutes % 60
+    return minutes == 0 ? "\(hours)시간 진행" : "\(hours)시간 \(minutes)분 진행"
 }
 
 #Preview {

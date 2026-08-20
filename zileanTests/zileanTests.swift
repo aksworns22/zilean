@@ -58,9 +58,13 @@ struct zileanTests {
         #expect(router.pendingCount == 1)
     }
 
-    @Test @MainActor func mergesAgentDeltasInArrivalOrder() {
+    @Test @MainActor func mergesAgentDeltasInArrivalOrder() async {
         let client = StubAppServerClient()
         let viewModel = ConversationViewModel(client: client)
+
+        await viewModel.connect()
+        viewModel.selectDirectory(URL(fileURLWithPath: "/tmp/delta-test"))
+        await viewModel.createConversation()
 
         client.onEvent?(.agentMessageDelta(itemID: "item-1", text: "안녕"))
         client.onEvent?(.agentMessageDelta(itemID: "item-1", text: "하세요"))
@@ -71,14 +75,50 @@ struct zileanTests {
         #expect(viewModel.messages[0].text == "안녕하세요!")
     }
 
-    @Test @MainActor func createsNewAgentMessageForDifferentItem() {
+    @Test @MainActor func createsNewAgentMessageForDifferentItem() async {
         let client = StubAppServerClient()
         let viewModel = ConversationViewModel(client: client)
+
+        await viewModel.connect()
+        viewModel.selectDirectory(URL(fileURLWithPath: "/tmp/item-test"))
+        await viewModel.createConversation()
 
         client.onEvent?(.agentMessageDelta(itemID: "item-1", text: "첫 번째"))
         client.onEvent?(.agentMessageDelta(itemID: "item-2", text: "두 번째"))
 
         #expect(viewModel.messages.map(\.text) == ["첫 번째", "두 번째"])
+    }
+
+    @Test @MainActor func preservesMessagesWhenSwitchingWorkSessions() async {
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(client: client)
+
+        await viewModel.connect()
+        viewModel.selectDirectory(URL(fileURLWithPath: "/tmp/first-work"))
+        await viewModel.createConversation()
+        let firstWorkID = try! #require(viewModel.activeWorkID)
+
+        viewModel.draft = "첫 번째 작업 정리"
+        await viewModel.sendMessage()
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        viewModel.selectDirectory(URL(fileURLWithPath: "/tmp/second-work"))
+        await viewModel.createConversation()
+        let secondWorkID = try! #require(viewModel.activeWorkID)
+        viewModel.draft = "두 번째 작업 시작"
+        await viewModel.sendMessage()
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(firstWorkID != secondWorkID)
+        #expect(viewModel.workSessions.count == 2)
+        #expect(Set(viewModel.recentWorkSessions.map(\.id)) == Set([firstWorkID, secondWorkID]))
+
+        viewModel.selectWork(id: firstWorkID)
+
+        #expect(viewModel.activeWorkID == firstWorkID)
+        #expect(viewModel.selectedDirectory?.lastPathComponent == "first-work")
+        #expect(viewModel.activeWork?.title == "첫 번째 작업 정리")
+        #expect(viewModel.messages.map(\.text) == ["첫 번째 작업 정리"])
     }
 }
 
@@ -86,13 +126,15 @@ struct zileanTests {
 private final class StubAppServerClient: CodexAppServerServing {
     var onEvent: ((AppServerEvent) -> Void)?
     var isConnected = false
+    private var nextThreadIndex = 0
 
     func connect() async throws {
         isConnected = true
     }
 
     func startThread(in directory: URL) async throws -> String {
-        "thread-1"
+        nextThreadIndex += 1
+        return "thread-\(nextThreadIndex)"
     }
 
     func startTurn(threadID: String, text: String) async throws -> String {
