@@ -472,7 +472,7 @@ private struct MessageRow: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text("질리언")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(DesignPalette.agentName)
@@ -492,7 +492,16 @@ private struct MessageRow: View {
             .textSelection(.enabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(
+                bubbleColor,
+                in: UnevenRoundedRectangle(
+                    topLeadingRadius: message.role == .agent ? 8 : 14,
+                    bottomLeadingRadius: 14,
+                    bottomTrailingRadius: 14,
+                    topTrailingRadius: message.role == .user ? 8 : 14,
+                    style: .continuous
+                )
+            )
     }
 
     private var bubbleColor: Color {
