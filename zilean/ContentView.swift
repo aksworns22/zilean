@@ -16,11 +16,14 @@ struct ContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             sidebar
-            Divider()
+            Rectangle()
+                .fill(DesignPalette.sidebarBorder)
+                .frame(width: 1)
             workspace
         }
         .frame(minWidth: 800, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
+        .ignoresSafeArea(.container, edges: .top)
         .task {
             await viewModel.connect()
         }
@@ -58,11 +61,9 @@ struct ContentView: View {
             recentWork
 
             Spacer(minLength: 20)
-
-            userProfile
         }
         .frame(width: 224)
-        .background(sidebarBackground)
+        .background(DesignPalette.sidebarBackground)
     }
 
     private var brand: some View {
@@ -83,7 +84,7 @@ struct ContentView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 22)
+        .padding(.top, 62)
         .padding(.bottom, 18)
     }
 
@@ -157,30 +158,6 @@ struct ContentView: View {
         .padding(.top, 22)
     }
 
-    private var userProfile: some View {
-        VStack(spacing: 0) {
-            Divider()
-
-            HStack(spacing: 10) {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("로컬 사용자")
-                        .font(.callout.weight(.medium))
-                    Text(viewModel.selectedDirectory?.lastPathComponent ?? "작업 폴더 미선택")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-        }
-    }
-
     private var workspace: some View {
         VStack(spacing: 0) {
             workspaceStatus
@@ -200,7 +177,7 @@ struct ContentView: View {
     }
 
     private var workspaceStatus: some View {
-        HStack(spacing: 10) {
+        HStack {
             if let directory = viewModel.selectedDirectory {
                 Button {
                     startNewWork(choosingDirectory: true)
@@ -215,13 +192,6 @@ struct ContentView: View {
             }
 
             Spacer()
-
-            if viewModel.phase.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            }
-
-            StatusBadge(phase: viewModel.phase)
         }
         .padding(.horizontal, 22)
         .padding(.top, 16)
@@ -370,7 +340,7 @@ struct ContentView: View {
                         .font(.body.weight(.bold))
                         .foregroundStyle(.white)
                         .frame(width: 32, height: 32)
-                        .background(Color.accentColor, in: Circle())
+                        .background(DesignPalette.userBubble, in: Circle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSendMessage)
@@ -450,48 +420,12 @@ struct ContentView: View {
         selectedDestination != .review && viewModel.canSend
     }
 
-    private var sidebarBackground: Color {
-        Color(nsColor: .underPageBackgroundColor).opacity(0.72)
-    }
 }
 
 private enum SidebarDestination {
     case newWork
     case review
     case currentWork
-}
-
-private struct StatusBadge: View {
-    let phase: ConversationPhase
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(phase.title)
-                .font(.caption.weight(.medium))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.12), in: Capsule())
-        .foregroundStyle(color)
-    }
-
-    private var color: Color {
-        switch phase {
-        case .failed:
-            .red
-        case .completed:
-            .green
-        case .responding, .connecting, .creatingConversation:
-            .orange
-        case .ready, .idle:
-            .blue
-        case .disconnected:
-            .secondary
-        }
-    }
 }
 
 private struct ErrorBanner: View {
@@ -519,35 +453,83 @@ private struct ErrorBanner: View {
 private struct MessageRow: View {
     let message: ConversationMessage
 
+    @ViewBuilder
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            if message.role == .user {
+        if message.role == .user {
+            HStack(alignment: .top) {
                 Spacer(minLength: 80)
-            } else {
+
+                messageBubble
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            HStack(alignment: .top, spacing: 10) {
                 Image("ZileanAvatar")
                     .resizable()
                     .scaledToFill()
                     .frame(width: 28, height: 28)
-                    .clipShape(Circle())
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .accessibilityHidden(true)
-            }
 
-            Text(message.text)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14))
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("질리언")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(DesignPalette.agentName)
 
-            if message.role == .agent {
+                    messageBubble
+                }
+
                 Spacer(minLength: 80)
             }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
+    }
+
+    private var messageBubble: some View {
+        Text(message.text)
+            .foregroundStyle(textColor)
+            .textSelection(.enabled)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     private var bubbleColor: Color {
-        message.role == .user ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12)
+        message.role == .user ? DesignPalette.userBubble : DesignPalette.agentBubble
     }
+
+    private var textColor: Color {
+        message.role == .user ? .white : DesignPalette.agentText
+    }
+}
+
+private enum DesignPalette {
+    static let sidebarBackground = Color(
+        red: 241.0 / 255.0,
+        green: 245.0 / 255.0,
+        blue: 246.0 / 255.0
+    )
+    static let sidebarBorder = Color.black.opacity(0.06)
+    static let agentBubble = Color(
+        red: 238.0 / 255.0,
+        green: 243.0 / 255.0,
+        blue: 244.0 / 255.0
+    )
+    static let agentText = Color(
+        red: 18.0 / 255.0,
+        green: 38.0 / 255.0,
+        blue: 43.0 / 255.0
+    )
+    static let agentName = Color(
+        red: 101.0 / 255.0,
+        green: 127.0 / 255.0,
+        blue: 132.0 / 255.0
+    )
+    static let userBubble = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
 }
 
 private struct WorkSessionSummary: View {

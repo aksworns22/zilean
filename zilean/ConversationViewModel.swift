@@ -56,27 +56,6 @@ enum ConversationPhase: Equatable {
     case completed
     case failed(String)
 
-    var title: String {
-        switch self {
-        case .disconnected:
-            "연결 안 됨"
-        case .connecting:
-            "Codex 연결 중"
-        case .ready:
-            "Codex 연결됨"
-        case .creatingConversation:
-            "새 대화 만드는 중"
-        case .idle:
-            "메시지 대기 중"
-        case .responding:
-            "응답 생성 중"
-        case .completed:
-            "완료"
-        case .failed:
-            "실패"
-        }
-    }
-
     var detail: String? {
         guard case let .failed(message) = self else { return nil }
         return message

@@ -13,5 +13,6 @@ struct ZileanApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(.hiddenTitleBar)
     }
 }

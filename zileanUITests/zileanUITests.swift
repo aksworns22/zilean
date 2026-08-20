@@ -32,6 +32,9 @@ final class zileanUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["오늘은 어떤 작업을 시작할까요?"].exists)
         XCTAssertTrue(app.buttons["작업 폴더 선택"].exists)
         XCTAssertTrue(app.buttons["메시지 보내기"].exists)
+        XCTAssertFalse(app.staticTexts["로컬 사용자"].exists)
+        XCTAssertFalse(app.staticTexts["완료"].exists)
+        XCTAssertEqual(app.progressIndicators.count, 0)
 
         app.buttons["돌아보기"].click()
         XCTAssertTrue(app.staticTexts["아직 돌아볼 작업이 없어요"].exists)
