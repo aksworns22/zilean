@@ -12,6 +12,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = ConversationViewModel()
     @State private var selectedDestination: SidebarDestination = .newWork
+    @State private var minimizedTimerID: UUID?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -25,6 +26,7 @@ struct ContentView: View {
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
         .task {
+            viewModel.startTimerMonitoring()
             await viewModel.connect()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
@@ -136,7 +138,8 @@ struct ContentView: View {
                                     work: work,
                                     now: context.date,
                                     showsDetails: false,
-                                    isActive: isSelected(work)
+                                    isActive: isSelected(work),
+                                    isTimerRunning: isTimerRunning(for: work)
                                 )
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -159,7 +162,27 @@ struct ContentView: View {
         .padding(.top, 22)
     }
 
+    @ViewBuilder
     private var workspace: some View {
+        if let timer = viewModel.focusTimer, minimizedTimerID != timer.id {
+            FocusTimerView(
+                timer: timer,
+                minimize: { minimizedTimerID = timer.id },
+                primaryAction: {
+                    if timer.status == .running {
+                        viewModel.completeFocusTimer()
+                    } else {
+                        viewModel.dismissCompletedFocusTimer()
+                        minimizedTimerID = nil
+                    }
+                }
+            )
+        } else {
+            conversationWorkspace
+        }
+    }
+
+    private var conversationWorkspace: some View {
         VStack(spacing: 0) {
             workspaceStatus
 
@@ -193,6 +216,21 @@ struct ContentView: View {
             }
 
             Spacer()
+
+            if let timer = viewModel.focusTimer {
+                Button {
+                    minimizedTimerID = nil
+                } label: {
+                    Label(
+                        timer.status == .running ? "집중 타이머 보기" : "완료된 타이머 보기",
+                        systemImage: "timer"
+                    )
+                    .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(DesignPalette.sidebarActiveText)
+                .help("집중 타이머 화면 열기")
+            }
         }
         .padding(.horizontal, 22)
         .padding(.top, 16)
@@ -417,6 +455,10 @@ struct ContentView: View {
         selectedDestination == .currentWork && viewModel.activeWorkID == work.id
     }
 
+    private func isTimerRunning(for work: WorkSession) -> Bool {
+        viewModel.focusTimer?.workID == work.id && viewModel.focusTimer?.status == .running
+    }
+
     private var canSendMessage: Bool {
         selectedDestination != .review && viewModel.canSend
     }
@@ -427,6 +469,112 @@ private enum SidebarDestination {
     case newWork
     case review
     case currentWork
+}
+
+private struct FocusTimerView: View {
+    let timer: FocusTimerSession
+    let minimize: () -> Void
+    let primaryAction: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button(action: minimize) {
+                        Label("최소화", systemImage: "arrow.down.right.and.arrow.up.left")
+                            .font(.callout.weight(.medium))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 9)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .background(
+                        Color.white.opacity(0.06),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                    }
+                    .help("대화 화면으로 돌아가기")
+                }
+                .padding(.top, 22)
+                .padding(.horizontal, 22)
+
+                Spacer(minLength: 24)
+
+                VStack(spacing: 26) {
+                    VStack(spacing: 10) {
+                        Text(timer.status == .running ? "집중 모드 · \(timer.taskTitle)" : "집중 완료 · \(timer.taskTitle)")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.52))
+                            .lineLimit(1)
+
+                        Text(formattedTime(timer.elapsed(at: context.date)))
+                            .font(.system(size: 92, weight: .medium, design: .monospaced))
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.94))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                            .accessibilityLabel("경과 시간 \(formattedTime(timer.elapsed(at: context.date)))")
+
+                        HStack(spacing: 10) {
+                            Text("예상")
+                            Text(formattedTime(TimeInterval(timer.durationMinutes * 60)))
+                                .monospacedDigit()
+                        }
+                        .font(.title3.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.42))
+                    }
+
+                    VStack(spacing: 13) {
+                        ProgressView(value: timer.progress(at: context.date))
+                            .progressViewStyle(.linear)
+                            .tint(.white.opacity(0.72))
+                            .accessibilityLabel("집중 시간 진행률")
+                            .accessibilityValue(
+                                "\(Int(timer.progress(at: context.date) * 100))퍼센트"
+                            )
+
+                        Text(timer.status == .running ? "집중 중" : "완료됨")
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.82))
+                    }
+                    .frame(maxWidth: 500)
+
+                    Button(
+                        timer.status == .running ? "완료" : "대화로 돌아가기",
+                        action: primaryAction
+                    )
+                    .buttonStyle(.plain)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(DesignPalette.focusBackground)
+                    .frame(width: 160, height: 54)
+                    .background(
+                        Color.white.opacity(0.96),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                    .help(timer.status == .running ? "현재 집중 작업 완료" : "대화 화면으로 돌아가기")
+                }
+                .padding(.horizontal, 44)
+
+                Spacer(minLength: 76)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(DesignPalette.focusBackground)
+        }
+    }
+
+    private func formattedTime(_ interval: TimeInterval) -> String {
+        let seconds = max(0, Int(interval))
+        return String(
+            format: "%02d:%02d:%02d",
+            seconds / 3_600,
+            (seconds % 3_600) / 60,
+            seconds % 60
+        )
+    }
 }
 
 private struct ErrorBanner: View {
@@ -514,6 +662,11 @@ private struct MessageRow: View {
 }
 
 private enum DesignPalette {
+    static let focusBackground = Color(
+        red: 10.0 / 255.0,
+        green: 48.0 / 255.0,
+        blue: 54.0 / 255.0
+    )
     static let sidebarBackground = Color(
         red: 241.0 / 255.0,
         green: 245.0 / 255.0,
@@ -557,6 +710,7 @@ private struct WorkSessionSummary: View {
     let now: Date
     let showsDetails: Bool
     var isActive = false
+    var isTimerRunning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: showsDetails ? 7 : 3) {
@@ -576,9 +730,15 @@ private struct WorkSessionSummary: View {
                 .lineLimit(1)
             }
 
-            Text(elapsedDescription(since: work.startedAt, now: now))
-                .font(.caption2)
-                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
+            if isTimerRunning {
+                Label("집중 중", systemImage: "timer")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(DesignPalette.sidebarActiveText)
+            } else {
+                Text(elapsedDescription(since: work.startedAt, now: now))
+                    .font(.caption2)
+                    .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

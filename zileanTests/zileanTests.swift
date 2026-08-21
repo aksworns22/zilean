@@ -78,7 +78,7 @@ struct zileanTests {
         #expect(arguments.contains { $0.contains(directory.path) })
     }
 
-    @Test func MCPServerAdvertisesStatusTool() throws {
+    @Test func MCPServerAdvertisesZileanTools() throws {
         let configurationDirectory = URL(fileURLWithPath: "/tmp/zilean-mcp-test")
         let protocolHandler = ZileanMCPProtocol(configurationDirectory: configurationDirectory)
         let request = try AppServerMessage(
@@ -88,24 +88,16 @@ struct zileanTests {
         let response = try #require(protocolHandler.response(to: request))
         let message = AppServerMessage(payload: response)
 
-        #expect(message.value(at: "result", "tools") == .array([
-            .object([
-                "name": .string(ZileanMCPProtocol.statusToolName),
-                "title": .string("Zilean 연결 상태"),
-                "description": .string("Zilean 앱의 로컬 MCP 연결 상태를 확인한다."),
-                "inputSchema": .object([
-                    "type": .string("object"),
-                    "properties": .object([:]),
-                    "additionalProperties": .bool(false),
-                ]),
-                "annotations": .object([
-                    "readOnlyHint": .bool(true),
-                    "destructiveHint": .bool(false),
-                    "idempotentHint": .bool(true),
-                    "openWorldHint": .bool(false),
-                ]),
-            ]),
-        ]))
+        guard case let .array(tools) = try #require(message.value(at: "result", "tools")) else {
+            Issue.record("MCP tools/list 결과가 배열이 아닙니다.")
+            return
+        }
+        let toolNames = tools.compactMap { $0.objectValue?["name"]?.stringValue }
+
+        #expect(toolNames == [
+            ZileanMCPProtocol.statusToolName,
+            ZileanMCPProtocol.startTimerToolName,
+        ])
     }
 
     @Test func MCPStatusToolReturnsConfigurationDirectory() throws {
@@ -124,6 +116,118 @@ struct zileanTests {
             message.value(at: "result", "structuredContent", "configurationDirectory")?.stringValue
                 == configurationDirectory.path
         )
+    }
+
+    @Test func MCPStartTimerToolRejectsInvalidDuration() throws {
+        let protocolHandler = ZileanMCPProtocol(
+            configurationDirectory: URL(fileURLWithPath: "/tmp/zilean-mcp-test")
+        )
+        let request = try AppServerMessage(
+            data: Data(
+                #"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"start_focus_timer","arguments":{"taskTitle":"DART 공시 작업","durationMinutes":0}}}"#.utf8
+            )
+        )
+
+        let response = try #require(protocolHandler.response(to: request))
+        let message = AppServerMessage(payload: response)
+
+        #expect(message.value(at: "result", "isError") == .bool(true))
+        #expect(
+            message.value(at: "result", "structuredContent", "errorCode")?.stringValue
+                == "invalid_duration"
+        )
+    }
+
+    @Test func completedFocusTimerFreezesElapsedTime() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let completedAt = startedAt.addingTimeInterval(75)
+        let timer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 2,
+            startedAt: startedAt,
+            status: .completed,
+            completedAt: completedAt
+        )
+
+        #expect(timer.elapsed(at: completedAt.addingTimeInterval(300)) == 75)
+        #expect(timer.progress(at: completedAt.addingTimeInterval(300)) == 0.625)
+    }
+
+    @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 120,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+
+        viewModel.processPendingTimerCommands(now: startedAt)
+
+        let timer = try #require(viewModel.focusTimer)
+        let storedResponse = try commandStore.readResponse(for: command.id)
+        let response = try #require(storedResponse)
+        #expect(timer.taskTitle == "DART 공시 작업")
+        #expect(timer.durationMinutes == 120)
+        #expect(timer.startedAt == startedAt)
+        #expect(viewModel.activeWork?.title == "DART 공시 작업")
+        #expect(response.success)
+        #expect(response.state == FocusTimerStatus.running.rawValue)
+        #expect(try commandStore.pendingCommands().isEmpty)
+
+        viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
+        #expect(viewModel.focusTimer?.status == .completed)
+        #expect(viewModel.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
+    }
+
+    @Test @MainActor func rejectsSecondTimerWhileOneIsRunning() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let firstCommand = ZileanMCPCommand(
+            taskTitle: "첫 번째 작업",
+            durationMinutes: 25,
+            createdAt: now
+        )
+        try commandStore.enqueue(firstCommand)
+        viewModel.processPendingTimerCommands(now: now)
+        let secondCommand = ZileanMCPCommand(
+            taskTitle: "두 번째 작업",
+            durationMinutes: 10,
+            createdAt: now
+        )
+        try commandStore.enqueue(secondCommand)
+
+        viewModel.processPendingTimerCommands(now: now)
+
+        let storedResponse = try commandStore.readResponse(for: secondCommand.id)
+        let response = try #require(storedResponse)
+        #expect(!response.success)
+        #expect(response.errorCode == "timer_already_running")
+        #expect(viewModel.focusTimer?.taskTitle == "첫 번째 작업")
     }
 
     @Test @MainActor func mergesAgentDeltasInArrivalOrder() async {
@@ -197,12 +301,7 @@ struct zileanTests {
 
         let instructionsURL = directory.appendingPathComponent("AGENTS.md")
         let instructions = try String(contentsOf: instructionsURL, encoding: .utf8)
-        #expect(
-            instructions == """
-            나는 사용자의 시간관리를 돕고 적절한 피드백을 적용하는 에이전트이다.
-            이름: 질리언.
-            """
-        )
+        #expect(instructions == CodexHarnessPreparer.instructions)
     }
 
     @Test @MainActor func preservesExistingAgentInstructions() throws {

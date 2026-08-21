@@ -77,11 +77,15 @@ final class ConversationViewModel: ObservableObject {
     @Published private(set) var workSessions: [WorkSession] = []
     @Published private(set) var activeWorkID: UUID?
     @Published private(set) var selectedDirectory: URL?
+    @Published private(set) var focusTimer: FocusTimerSession?
     @Published var draft = ""
 
     private let client: CodexAppServerServing
     private let harnessPreparer: CodexHarnessPreparing
+    private let timerCommandStore: ZileanMCPCommandStore
     private var activeAgentItemID: String?
+    private var timerMonitorTask: Task<Void, Never>?
+    private var pendingTimerResponses: [UUID: ZileanMCPCommandResponse] = [:]
 
     var activeWork: WorkSession? {
         guard let activeWorkID else { return nil }
@@ -116,19 +120,36 @@ final class ConversationViewModel: ObservableObject {
     }
 
     convenience init() {
+        let mcpConfiguration = ZileanMCPConfiguration()
         self.init(
-            client: CodexAppServerClient(),
-            harnessPreparer: CodexHarnessPreparer()
+            client: CodexAppServerClient(mcpConfiguration: mcpConfiguration),
+            harnessPreparer: CodexHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(
+                rootDirectory: mcpConfiguration.rootDirectory
+            )
         )
     }
 
     convenience init(client: CodexAppServerServing) {
-        self.init(client: client, harnessPreparer: CodexHarnessPreparer())
+        self.init(
+            client: client,
+            harnessPreparer: CodexHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(
+                rootDirectory: ZileanMCPConfiguration().rootDirectory
+            )
+        )
     }
 
-    init(client: CodexAppServerServing, harnessPreparer: CodexHarnessPreparing) {
+    init(
+        client: CodexAppServerServing,
+        harnessPreparer: CodexHarnessPreparing,
+        timerCommandStore: ZileanMCPCommandStore = ZileanMCPCommandStore(
+            rootDirectory: ZileanMCPConfiguration().rootDirectory
+        )
+    ) {
         self.client = client
         self.harnessPreparer = harnessPreparer
+        self.timerCommandStore = timerCommandStore
         client.onEvent = { [weak self] event in
             self?.handle(event)
         }
@@ -153,6 +174,24 @@ final class ConversationViewModel: ObservableObject {
 
     func selectDirectory(_ directory: URL) {
         selectedDirectory = directory.standardizedFileURL
+    }
+
+    func startTimerMonitoring() {
+        guard timerMonitorTask == nil else { return }
+
+        do {
+            try timerCommandStore.prepare()
+        } catch {
+            phase = .failed("타이머 요청 폴더를 준비하지 못했습니다: \(error.localizedDescription)")
+            return
+        }
+
+        timerMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.processPendingTimerCommands()
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+        }
     }
 
     func createConversation() async {
@@ -215,9 +254,47 @@ final class ConversationViewModel: ObservableObject {
     }
 
     func shutdown() {
+        timerMonitorTask?.cancel()
+        timerMonitorTask = nil
         client.stop()
         activeAgentItemID = nil
         phase = .disconnected
+    }
+
+    func processPendingTimerCommands(now: Date = .now) {
+        let commands: [ZileanMCPCommand]
+        do {
+            commands = try timerCommandStore.pendingCommands()
+        } catch {
+            phase = .failed("타이머 시작 요청을 읽지 못했습니다: \(error.localizedDescription)")
+            return
+        }
+
+        for command in commands {
+            let response = pendingTimerResponses[command.id]
+                ?? handleTimerCommand(command, now: now)
+            pendingTimerResponses[command.id] = response
+
+            do {
+                try timerCommandStore.writeResponse(response)
+                try timerCommandStore.removeRequest(for: command.id)
+                pendingTimerResponses[command.id] = nil
+            } catch {
+                phase = .failed("타이머 시작 결과를 전달하지 못했습니다: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func completeFocusTimer(at date: Date = .now) {
+        guard var timer = focusTimer, timer.status == .running else { return }
+        timer.status = .completed
+        timer.completedAt = date
+        focusTimer = timer
+    }
+
+    func dismissCompletedFocusTimer() {
+        guard focusTimer?.status == .completed else { return }
+        focusTimer = nil
     }
 
     func handle(_ event: AppServerEvent) {
@@ -254,6 +331,55 @@ final class ConversationViewModel: ObservableObject {
             activeAgentItemID = itemID
         }
         workSessions[activeWorkIndex].updatedAt = .now
+    }
+
+    private func handleTimerCommand(
+        _ command: ZileanMCPCommand,
+        now: Date
+    ) -> ZileanMCPCommandResponse {
+        guard now.timeIntervalSince(command.createdAt) <= 10 else {
+            return .failed(
+                commandID: command.id,
+                code: "expired_request",
+                message: "타이머 시작 요청이 만료되었습니다. 다시 확인해 주세요."
+            )
+        }
+        guard !command.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              (1...1_440).contains(command.durationMinutes)
+        else {
+            return .failed(
+                commandID: command.id,
+                code: "invalid_arguments",
+                message: "작업명과 집중 시간을 확인해 주세요."
+            )
+        }
+        guard let workID = activeWorkID else {
+            return .failed(
+                commandID: command.id,
+                code: "missing_active_work",
+                message: "타이머를 연결할 활성 작업이 없습니다."
+            )
+        }
+        if focusTimer?.status == .running {
+            return .failed(
+                commandID: command.id,
+                code: "timer_already_running",
+                message: "이미 실행 중인 집중 타이머가 있습니다."
+            )
+        }
+
+        let session = FocusTimerSession(
+            workID: workID,
+            taskTitle: command.taskTitle,
+            durationMinutes: command.durationMinutes,
+            startedAt: now
+        )
+        focusTimer = session
+        if let activeWorkIndex {
+            workSessions[activeWorkIndex].title = command.taskTitle
+            workSessions[activeWorkIndex].updatedAt = now
+        }
+        return .started(command: command, session: session)
     }
 
     private var activeWorkIndex: Int? {
