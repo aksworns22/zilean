@@ -10,6 +10,62 @@ import Testing
 @testable import zilean
 
 struct zileanTests {
+    @Test func parsesMarkdownBlockStructure() {
+        let source = """
+        # 계획
+
+        - **분석**
+        - 구현
+
+        1. 검증
+        2. 배포
+
+        > 결과를 확인합니다.
+
+        ```swift
+        let value = 1
+        ```
+        """
+
+        #expect(MarkdownBlockParser.parse(source) == [
+            .heading(level: 1, text: "계획"),
+            .unorderedList(["**분석**", "구현"]),
+            .orderedList(["검증", "배포"]),
+            .quote("결과를 확인합니다."),
+            .code(language: "swift", content: "let value = 1"),
+        ])
+    }
+
+    @Test func preservesUnclosedCodeFenceDuringStreaming() {
+        let source = """
+        ```swift
+        let value = 1
+        """
+
+        #expect(MarkdownBlockParser.parse(source) == [
+            .code(language: "swift", content: "let value = 1"),
+        ])
+    }
+
+    @Test func rendersInlineMarkdownAndLinks() {
+        let attributed = MarkdownInlineParser.attributed(
+            "**질리언**이 *강조*와 `코드`, [문서](https://example.com)를 표시합니다."
+        )
+        let intents = attributed.runs.compactMap(\.inlinePresentationIntent)
+
+        #expect(String(attributed.characters) == "질리언이 강조와 코드, 문서를 표시합니다.")
+        #expect(intents.contains { $0.contains(.stronglyEmphasized) })
+        #expect(intents.contains { $0.contains(.emphasized) })
+        #expect(intents.contains { $0.contains(.code) })
+        #expect(attributed.runs.contains { $0.link?.absoluteString == "https://example.com" })
+    }
+
+    @Test func keepsMalformedInlineMarkdownContentVisible() {
+        let attributed = MarkdownInlineParser.attributed("**아직 닫히지 않은 응답")
+
+        #expect(String(attributed.characters).contains("아직 닫히지 않은 응답"))
+    }
+
     @Test func decodesSplitAndMultipleJSONLMessages() throws {
         var decoder = JSONLMessageDecoder()
 

@@ -486,10 +486,17 @@ private struct MessageRow: View {
         }
     }
 
+    @ViewBuilder
     private var messageBubble: some View {
-        Text(message.text)
+        Group {
+            if message.role == .agent {
+                MarkdownMessageView(source: message.text)
+            } else {
+                Text(message.text)
+                    .textSelection(.enabled)
+            }
+        }
             .foregroundStyle(textColor)
-            .textSelection(.enabled)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .background(
