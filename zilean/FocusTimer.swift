@@ -5,6 +5,22 @@ nonisolated enum FocusTimerStatus: String, Codable, Equatable, Sendable {
     case completed
 }
 
+nonisolated enum FocusTimerTimeFormatter {
+    static func string(from interval: TimeInterval) -> String {
+        string(seconds: max(0, Int(interval)))
+    }
+
+    static func string(seconds: Int) -> String {
+        let seconds = max(0, seconds)
+        return String(
+            format: "%02d:%02d:%02d",
+            seconds / 3_600,
+            (seconds % 3_600) / 60,
+            seconds % 60
+        )
+    }
+}
+
 nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
     let id: UUID
     let workID: UUID
@@ -40,8 +56,29 @@ nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
         max(0, (completedAt ?? now).timeIntervalSince(startedAt))
     }
 
+    func remaining(at now: Date) -> TimeInterval {
+        max(0, targetEndAt.timeIntervalSince(now))
+    }
+
+    func remainingText(at now: Date) -> String {
+        FocusTimerTimeFormatter.string(from: remaining(at: now))
+    }
+
     func progress(at now: Date) -> Double {
         min(1, elapsed(at: now) / TimeInterval(durationMinutes * 60))
+    }
+}
+
+nonisolated enum FocusTimerMenuBarState: Equatable, Sendable {
+    case hidden
+    case running(taskTitle: String, remainingText: String)
+
+    static func make(timer: FocusTimerSession?, now: Date) -> Self {
+        guard let timer, timer.status == .running else { return .hidden }
+        return .running(
+            taskTitle: timer.taskTitle,
+            remainingText: timer.remainingText(at: now)
+        )
     }
 }
 

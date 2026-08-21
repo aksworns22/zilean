@@ -210,6 +210,60 @@ struct zileanTests {
         #expect(timer.progress(at: completedAt.addingTimeInterval(300)) == 0.625)
     }
 
+    @Test func focusTimerRemainingTimeCountsDownFromTargetEnd() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let timer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 2,
+            startedAt: startedAt
+        )
+
+        #expect(timer.remaining(at: startedAt) == 120)
+        #expect(timer.remaining(at: startedAt.addingTimeInterval(15)) == 105)
+        #expect(timer.remainingText(at: startedAt.addingTimeInterval(15)) == "00:01:45")
+    }
+
+    @Test func focusTimerRemainingTimeClampsAtZero() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let timer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 1,
+            startedAt: startedAt
+        )
+
+        #expect(timer.remaining(at: startedAt.addingTimeInterval(61)) == 0)
+        #expect(timer.remainingText(at: startedAt.addingTimeInterval(61)) == "00:00:00")
+    }
+
+    @Test func menuBarStateOnlyShowsRunningFocusTimer() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let runningTimer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 25,
+            startedAt: startedAt
+        )
+        let completedTimer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 25,
+            startedAt: startedAt,
+            status: .completed,
+            completedAt: startedAt.addingTimeInterval(75)
+        )
+
+        #expect(
+            FocusTimerMenuBarState.make(
+                timer: runningTimer,
+                now: startedAt.addingTimeInterval(10)
+            ) == .running(taskTitle: "재무제표 정리", remainingText: "00:24:50")
+        )
+        #expect(FocusTimerMenuBarState.make(timer: completedTimer, now: startedAt) == .hidden)
+        #expect(FocusTimerMenuBarState.make(timer: nil, now: startedAt) == .hidden)
+    }
+
     @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

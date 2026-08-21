@@ -10,9 +10,17 @@ import Combine
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = ConversationViewModel()
+    @ObservedObject var viewModel: ConversationViewModel
+    @StateObject private var menuBarTimerController: MenuBarTimerController
     @State private var selectedDestination: SidebarDestination = .newWork
     @State private var minimizedTimerID: UUID?
+
+    init(viewModel: ConversationViewModel) {
+        self.viewModel = viewModel
+        _menuBarTimerController = StateObject(
+            wrappedValue: MenuBarTimerController(viewModel: viewModel)
+        )
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -25,12 +33,16 @@ struct ContentView: View {
         .frame(minWidth: 800, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
+        .environmentObject(menuBarTimerController)
         .task {
             viewModel.startTimerMonitoring()
             await viewModel.connect()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             viewModel.shutdown()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .zileanShowFocusTimer)) { _ in
+            minimizedTimerID = nil
         }
         .onDisappear {
             viewModel.shutdown()
@@ -524,17 +536,23 @@ private struct FocusTimerView: View {
                             .foregroundStyle(.white.opacity(0.52))
                             .lineLimit(1)
 
-                        Text(formattedTime(timer.elapsed(at: context.date)))
+                        Text(FocusTimerTimeFormatter.string(from: timer.elapsed(at: context.date)))
                             .font(.system(size: 92, weight: .medium, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(.white.opacity(0.94))
                             .lineLimit(1)
                             .minimumScaleFactor(0.55)
-                            .accessibilityLabel("경과 시간 \(formattedTime(timer.elapsed(at: context.date)))")
+                            .accessibilityLabel(
+                                "경과 시간 \(FocusTimerTimeFormatter.string(from: timer.elapsed(at: context.date)))"
+                            )
 
                         HStack(spacing: 10) {
                             Text("예상")
-                            Text(formattedTime(TimeInterval(timer.durationMinutes * 60)))
+                            Text(
+                                FocusTimerTimeFormatter.string(
+                                    from: TimeInterval(timer.durationMinutes * 60)
+                                )
+                            )
                                 .monospacedDigit()
                         }
                         .font(.title3.weight(.medium))
@@ -577,16 +595,6 @@ private struct FocusTimerView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(DesignPalette.focusBackground)
         }
-    }
-
-    private func formattedTime(_ interval: TimeInterval) -> String {
-        let seconds = max(0, Int(interval))
-        return String(
-            format: "%02d:%02d:%02d",
-            seconds / 3_600,
-            (seconds % 3_600) / 60,
-            seconds % 60
-        )
     }
 }
 
@@ -781,5 +789,5 @@ private func elapsedDescription(since startDate: Date, now: Date) -> String {
 }
 
 #Preview {
-    ContentView()
+    ContentView(viewModel: ConversationViewModel())
 }
