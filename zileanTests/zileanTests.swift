@@ -58,6 +58,74 @@ struct zileanTests {
         #expect(router.pendingCount == 1)
     }
 
+    @Test func preparesIsolatedMCPConfigurationArguments() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executableURL = URL(fileURLWithPath: "/Applications/Zilean Test.app/Contents/MacOS/zilean")
+        let configuration = ZileanMCPConfiguration(
+            executableURL: executableURL,
+            rootDirectory: directory
+        )
+
+        let arguments = try configuration.prepareCodexArguments()
+
+        #expect(FileManager.default.fileExists(atPath: directory.path))
+        #expect(arguments.prefix(2) == ["app-server", "--stdio"])
+        #expect(arguments.contains("mcp_servers.zilean.command=\"/Applications/Zilean Test.app/Contents/MacOS/zilean\""))
+        #expect(arguments.contains("mcp_servers.zilean.required=true"))
+        #expect(arguments.contains("mcp_servers.zilean.env.LLVM_PROFILE_FILE=\"/dev/null\""))
+        #expect(arguments.contains { $0.contains("--zilean-mcp-server") })
+        #expect(arguments.contains { $0.contains(directory.path) })
+    }
+
+    @Test func MCPServerAdvertisesStatusTool() throws {
+        let configurationDirectory = URL(fileURLWithPath: "/tmp/zilean-mcp-test")
+        let protocolHandler = ZileanMCPProtocol(configurationDirectory: configurationDirectory)
+        let request = try AppServerMessage(
+            data: Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#.utf8)
+        )
+
+        let response = try #require(protocolHandler.response(to: request))
+        let message = AppServerMessage(payload: response)
+
+        #expect(message.value(at: "result", "tools") == .array([
+            .object([
+                "name": .string(ZileanMCPProtocol.statusToolName),
+                "title": .string("Zilean 연결 상태"),
+                "description": .string("Zilean 앱의 로컬 MCP 연결 상태를 확인한다."),
+                "inputSchema": .object([
+                    "type": .string("object"),
+                    "properties": .object([:]),
+                    "additionalProperties": .bool(false),
+                ]),
+                "annotations": .object([
+                    "readOnlyHint": .bool(true),
+                    "destructiveHint": .bool(false),
+                    "idempotentHint": .bool(true),
+                    "openWorldHint": .bool(false),
+                ]),
+            ]),
+        ]))
+    }
+
+    @Test func MCPStatusToolReturnsConfigurationDirectory() throws {
+        let configurationDirectory = URL(fileURLWithPath: "/tmp/zilean-mcp-test")
+        let protocolHandler = ZileanMCPProtocol(configurationDirectory: configurationDirectory)
+        let request = try AppServerMessage(
+            data: Data(#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"zilean_status","arguments":{}}}"#.utf8)
+        )
+
+        let response = try #require(protocolHandler.response(to: request))
+        let message = AppServerMessage(payload: response)
+
+        #expect(message.value(at: "result", "isError") == .bool(false))
+        #expect(message.value(at: "result", "structuredContent", "connected") == .bool(true))
+        #expect(
+            message.value(at: "result", "structuredContent", "configurationDirectory")?.stringValue
+                == configurationDirectory.path
+        )
+    }
+
     @Test @MainActor func mergesAgentDeltasInArrivalOrder() async {
         let client = StubAppServerClient()
         let viewModel = ConversationViewModel(client: client, harnessPreparer: StubHarnessPreparer())

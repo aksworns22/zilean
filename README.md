@@ -31,6 +31,8 @@ codex login status
 
 연결 또는 프로토콜 오류가 발생하면 입력창 위 오류 배너의 안내를 확인하고 `연결 재시도`를 누릅니다. 현재 최소 흐름은 승인 요청 없이 읽기 전용 sandbox에서 동작합니다.
 
+앱은 Codex app-server를 시작할 때 Zilean의 로컬 STDIO MCP 서버를 함께 연결합니다. MCP 런타임 파일은 `~/Library/Application Support/Zilean/MCP`에 두며, 사용자의 전역 Codex 설정 파일은 변경하지 않습니다.
+
 ## 명령줄 빌드
 
 저장소 루트에서 다음 명령을 실행합니다.
