@@ -11,8 +11,16 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var viewModel: ConversationViewModel
+    @StateObject private var menuBarTimerController: MenuBarTimerController
     @State private var selectedDestination: SidebarDestination = .newWork
     @State private var minimizedTimerID: UUID?
+
+    init(viewModel: ConversationViewModel) {
+        self.viewModel = viewModel
+        _menuBarTimerController = StateObject(
+            wrappedValue: MenuBarTimerController(viewModel: viewModel)
+        )
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -25,6 +33,7 @@ struct ContentView: View {
         .frame(minWidth: 800, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
+        .environmentObject(menuBarTimerController)
         .task {
             viewModel.startTimerMonitoring()
             await viewModel.connect()
