@@ -24,6 +24,7 @@ struct ZileanApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(viewModel: viewModel)
+                .preferredColorScheme(.light)
         }
         .windowStyle(.hiddenTitleBar)
     }
