@@ -344,6 +344,20 @@ final class ConversationViewModel: ObservableObject {
         await requestRetrospectiveIfPossible()
     }
 
+    @discardableResult
+    func startFocusTimer(
+        taskTitle: String,
+        durationMinutes: Int,
+        at date: Date = .now
+    ) -> ZileanMCPCommandResponse {
+        let command = ZileanMCPCommand(
+            taskTitle: taskTitle,
+            durationMinutes: durationMinutes,
+            createdAt: date
+        )
+        return startFocusTimer(command, now: date)
+    }
+
     func handle(_ event: AppServerEvent) {
         switch event {
         case let .agentMessageDelta(itemID, text):
@@ -425,7 +439,15 @@ final class ConversationViewModel: ObservableObject {
                 message: "타이머 시작 요청이 만료되었습니다. 다시 확인해 주세요."
             )
         }
-        guard !command.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        return startFocusTimer(command, now: now)
+    }
+
+    private func startFocusTimer(
+        _ command: ZileanMCPCommand,
+        now: Date
+    ) -> ZileanMCPCommandResponse {
+        let taskTitle = command.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !taskTitle.isEmpty,
               (1...1_440).contains(command.durationMinutes)
         else {
             return .failed(
@@ -451,7 +473,7 @@ final class ConversationViewModel: ObservableObject {
 
         let session = FocusTimerSession(
             workID: workID,
-            taskTitle: command.taskTitle,
+            taskTitle: taskTitle,
             durationMinutes: command.durationMinutes,
             startedAt: now
         )
@@ -459,7 +481,7 @@ final class ConversationViewModel: ObservableObject {
         retrospectiveStatus = .idle
         focusTimer = session
         if let activeWorkIndex {
-            workSessions[activeWorkIndex].title = command.taskTitle
+            workSessions[activeWorkIndex].title = taskTitle
             workSessions[activeWorkIndex].updatedAt = now
         }
         return .started(command: command, session: session)
