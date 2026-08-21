@@ -138,6 +138,8 @@ struct CodexExecutableLocator {
 final class CodexAppServerClient: CodexAppServerServing {
     var onEvent: ((AppServerEvent) -> Void)?
 
+    private let mcpConfiguration: ZileanMCPConfiguration
+
     private var process: Process?
     private var standardInput: FileHandle?
     private var standardOutput: FileHandle?
@@ -153,6 +155,10 @@ final class CodexAppServerClient: CodexAppServerServing {
         process?.isRunning == true
     }
 
+    init(mcpConfiguration: ZileanMCPConfiguration = ZileanMCPConfiguration()) {
+        self.mcpConfiguration = mcpConfiguration
+    }
+
     func connect() async throws {
         stop()
 
@@ -164,9 +170,10 @@ final class CodexAppServerClient: CodexAppServerServing {
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()
+        let processArguments = try mcpConfiguration.prepareCodexArguments()
 
         process.executableURL = executableURL
-        process.arguments = ["app-server", "--stdio"]
+        process.arguments = processArguments
         process.environment = CodexExecutableLocator.processEnvironment(for: executableURL)
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
