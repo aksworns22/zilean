@@ -415,6 +415,70 @@ struct zileanTests {
         #expect(client.startTurnTexts.count == 2)
     }
 
+    @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 25,
+            at: startedAt
+        )
+
+        #expect(response.success)
+        #expect(viewModel.focusTimer?.taskTitle == "DART 공시 작업")
+        #expect(viewModel.focusTimer?.durationMinutes == 25)
+        #expect(viewModel.focusTimer?.startedAt == startedAt)
+        #expect(viewModel.activeWork?.title == "DART 공시 작업")
+    }
+
+    @Test @MainActor func directFocusTimerRejectsInvalidDuration() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 0
+        )
+
+        #expect(!response.success)
+        #expect(response.errorCode == "invalid_arguments")
+        #expect(viewModel.focusTimer == nil)
+    }
+
+    @Test @MainActor func directFocusTimerRequiresActiveWork() {
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer()
+        )
+
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 25
+        )
+
+        #expect(!response.success)
+        #expect(response.errorCode == "missing_active_work")
+        #expect(viewModel.focusTimer == nil)
+    }
+
     @Test @MainActor func rejectsSecondTimerWhileOneIsRunning() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
