@@ -170,7 +170,11 @@ struct ContentView: View {
                 minimize: { minimizedTimerID = timer.id },
                 primaryAction: {
                     if timer.status == .running {
-                        viewModel.completeFocusTimer()
+                        Task {
+                            await viewModel.completeFocusTimer()
+                            minimizedTimerID = timer.id
+                            selectedDestination = .currentWork
+                        }
                     } else {
                         viewModel.dismissCompletedFocusTimer()
                         minimizedTimerID = nil
@@ -343,8 +347,17 @@ struct ContentView: View {
             if let detail = viewModel.phase.detail {
                 ErrorBanner(
                     message: detail,
-                    showsRetry: viewModel.canRetryConnection,
-                    retry: { Task { await viewModel.connect() } }
+                    showsRetry: viewModel.canRetryConnection || viewModel.canRetryRetrospective,
+                    retryTitle: viewModel.canRetryRetrospective ? "회고 재시도" : "연결 재시도",
+                    retry: {
+                        Task {
+                            if viewModel.canRetryRetrospective {
+                                await viewModel.retryRetrospective()
+                            } else {
+                                await viewModel.connect()
+                            }
+                        }
+                    }
                 )
             }
 
@@ -580,6 +593,7 @@ private struct FocusTimerView: View {
 private struct ErrorBanner: View {
     let message: String
     let showsRetry: Bool
+    let retryTitle: String
     let retry: () -> Void
 
     var body: some View {
@@ -591,7 +605,7 @@ private struct ErrorBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
             if showsRetry {
-                Button("연결 재시도", action: retry)
+                Button(retryTitle, action: retry)
             }
         }
         .padding(10)

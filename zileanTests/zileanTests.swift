@@ -244,9 +244,121 @@ struct zileanTests {
         #expect(response.state == FocusTimerStatus.running.rawValue)
         #expect(try commandStore.pendingCommands().isEmpty)
 
-        viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
         #expect(viewModel.focusTimer?.status == .completed)
         #expect(viewModel.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
+    }
+
+    @Test @MainActor func requestsRetrospectiveWhenFocusTimerCompletes() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "회고 대상 작업",
+            durationMinutes: 25,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+
+        let completedAt = startedAt.addingTimeInterval(75)
+        await viewModel.completeFocusTimer(at: completedAt)
+
+        let prompt = try #require(client.startTurnTexts.last)
+        #expect(viewModel.focusTimer?.status == .completed)
+        #expect(viewModel.retrospectiveStatus == .requesting)
+        #expect(prompt.contains("회고 대상 작업"))
+        #expect(prompt.contains("계획한 집중 시간: 25분"))
+        #expect(prompt.contains("실제 경과 시간: 75초"))
+
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(viewModel.retrospectiveStatus == .prompted)
+    }
+
+    @Test @MainActor func keepsRetrospectiveRetryableAfterTurnFailure() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "재시도 작업",
+            durationMinutes: 10,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+
+        client.startTurnError = TestError.preparationFailed
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(10))
+
+        #expect(viewModel.focusTimer?.status == .completed)
+        #expect(viewModel.retrospectiveStatus == .failed(TestError.preparationFailed.localizedDescription))
+        #expect(viewModel.canRetryRetrospective)
+
+        client.startTurnError = nil
+        await viewModel.retryRetrospective()
+
+        #expect(client.startTurnTexts.count == 2)
+        #expect(viewModel.retrospectiveStatus == .requesting)
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        #expect(viewModel.retrospectiveStatus == .prompted)
+    }
+
+    @Test @MainActor func recordsRetrospectiveAnswerAndDoesNotPromptTwice() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "응답 기록 작업",
+            durationMinutes: 5,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(30))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        viewModel.draft = "핵심 로직을 정리했고 다음에는 테스트를 보강할게요."
+        await viewModel.sendMessage()
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(viewModel.messages.last?.text == "핵심 로직을 정리했고 다음에는 테스트를 보강할게요.")
+
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(60))
+        #expect(client.startTurnTexts.count == 2)
     }
 
     @Test @MainActor func rejectsSecondTimerWhileOneIsRunning() async throws {
@@ -433,7 +545,9 @@ private final class StubAppServerClient: CodexAppServerServing {
     var onEvent: ((AppServerEvent) -> Void)?
     var isConnected = false
     var onStartThread: ((URL) -> String?)?
+    var startTurnError: Error?
     private(set) var instructionsAtThreadStart: String?
+    private(set) var startTurnTexts: [String] = []
     private(set) var startThreadCallCount = 0
     private var nextThreadIndex = 0
 
@@ -449,7 +563,11 @@ private final class StubAppServerClient: CodexAppServerServing {
     }
 
     func startTurn(threadID: String, text: String) async throws -> String {
-        "turn-1"
+        startTurnTexts.append(text)
+        if let startTurnError {
+            throw startTurnError
+        }
+        return "turn-\(startTurnTexts.count)"
     }
 
     func stop() {
