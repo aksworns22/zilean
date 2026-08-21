@@ -80,6 +80,7 @@ final class ConversationViewModel: ObservableObject {
     @Published var draft = ""
 
     private let client: CodexAppServerServing
+    private let harnessPreparer: CodexHarnessPreparing
     private var activeAgentItemID: String?
 
     var activeWork: WorkSession? {
@@ -115,11 +116,19 @@ final class ConversationViewModel: ObservableObject {
     }
 
     convenience init() {
-        self.init(client: CodexAppServerClient())
+        self.init(
+            client: CodexAppServerClient(),
+            harnessPreparer: CodexHarnessPreparer()
+        )
     }
 
-    init(client: CodexAppServerServing) {
+    convenience init(client: CodexAppServerServing) {
+        self.init(client: client, harnessPreparer: CodexHarnessPreparer())
+    }
+
+    init(client: CodexAppServerServing, harnessPreparer: CodexHarnessPreparing) {
         self.client = client
+        self.harnessPreparer = harnessPreparer
         client.onEvent = { [weak self] event in
             self?.handle(event)
         }
@@ -151,6 +160,7 @@ final class ConversationViewModel: ObservableObject {
 
         phase = .creatingConversation
         do {
+            try harnessPreparer.prepare(in: selectedDirectory)
             let threadID = try await client.startThread(in: selectedDirectory)
             let now = Date.now
             let session = WorkSession(
