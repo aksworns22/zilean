@@ -24,6 +24,7 @@ final class zileanUITests: XCTestCase {
 
     func testWorkspaceLayoutAppears() throws {
         let app = XCUIApplication()
+        app.launchArguments += ["-ApplePersistenceIgnoreState", "YES"]
         app.launch()
 
         XCTAssertTrue(app.buttons["새 작업"].waitForExistence(timeout: 15))
