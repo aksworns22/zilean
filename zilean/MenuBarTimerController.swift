@@ -45,11 +45,6 @@ final class MenuBarTimerController: ObservableObject {
         statusItem.isVisible = true
         statusItem.button?.target = self
         statusItem.button?.action = #selector(showFocusTimer)
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "timer",
-            accessibilityDescription: "집중 타이머"
-        )
-        statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.font = NSFont.monospacedDigitSystemFont(
             ofSize: NSFont.systemFontSize,
             weight: .regular

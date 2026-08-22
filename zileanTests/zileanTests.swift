@@ -316,6 +316,7 @@ struct zileanTests {
         await viewModel.connect()
         viewModel.selectDirectory(directory)
         await viewModel.createConversation()
+        #expect(viewModel.recentWorkSessions.isEmpty)
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let command = ZileanMCPCommand(
             taskTitle: "DART 공시 작업",
@@ -333,6 +334,8 @@ struct zileanTests {
         #expect(timer.durationMinutes == 120)
         #expect(timer.startedAt == startedAt)
         #expect(viewModel.activeWork?.title == "DART 공시 작업")
+        #expect(viewModel.recentWorkSessions.map(\.id) == [timer.workID])
+        #expect(viewModel.recentWorkSessions.first?.focusTimer?.durationMinutes == 120)
         #expect(response.success)
         #expect(response.state == FocusTimerStatus.running.rawValue)
         #expect(try commandStore.pendingCommands().isEmpty)
@@ -341,6 +344,8 @@ struct zileanTests {
         #expect(viewModel.focusTimer?.status == .completed)
         #expect(viewModel.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
         #expect(viewModel.focusTimerPresentation == nil)
+        #expect(viewModel.recentWorkSessions.first?.focusTimer?.status == .completed)
+        #expect(viewModel.recentWorkSessions.first?.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
     }
 
     @Test @MainActor func requestsRetrospectiveWhenFocusTimerCompletes() async throws {
@@ -602,6 +607,35 @@ struct zileanTests {
         #expect(!response.success)
         #expect(response.errorCode == "timer_already_running")
         #expect(viewModel.focusTimer?.taskTitle == "첫 번째 작업")
+        #expect(viewModel.recentWorkSessions.map(\.id) == [viewModel.focusTimer?.workID].compactMap { $0 })
+    }
+
+    @Test @MainActor func doesNotAddRecentWorkForExpiredTimerCommand() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "만료된 작업",
+            durationMinutes: 25,
+            createdAt: now.addingTimeInterval(-11)
+        )
+        try commandStore.enqueue(command)
+
+        viewModel.processPendingTimerCommands(now: now)
+
+        let response = try #require(try commandStore.readResponse(for: command.id))
+        #expect(!response.success)
+        #expect(response.errorCode == "expired_request")
+        #expect(viewModel.recentWorkSessions.isEmpty)
     }
 
     @Test @MainActor func mergesAgentDeltasInArrivalOrder() async {
@@ -657,7 +691,7 @@ struct zileanTests {
 
         #expect(firstWorkID != secondWorkID)
         #expect(viewModel.workSessions.count == 2)
-        #expect(Set(viewModel.recentWorkSessions.map(\.id)) == Set([firstWorkID, secondWorkID]))
+        #expect(viewModel.recentWorkSessions.isEmpty)
 
         viewModel.selectWork(id: firstWorkID)
 
