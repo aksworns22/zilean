@@ -243,7 +243,7 @@ struct ContentView: View {
             VStack(spacing: 8) {
                 Text("아직 돌아볼 작업이 없어요")
                     .font(.title2.weight(.semibold))
-                Text("새 작업을 시작하면 이곳에서 다시 열 수 있어요.")
+                Text("집중 타이머를 시작한 작업을 이곳에서 다시 열 수 있어요.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -255,7 +255,7 @@ struct ContentView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("돌아보기")
                                 .font(.title2.weight(.semibold))
-                            Text("이 앱을 사용하는 동안 시작한 작업을 다시 열 수 있어요.")
+                            Text("집중 타이머를 시작한 작업을 다시 열 수 있어요.")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                         }
@@ -456,7 +456,7 @@ struct ContentView: View {
     }
 
     private func isTimerRunning(for work: WorkSession) -> Bool {
-        viewModel.focusTimer?.workID == work.id && viewModel.focusTimer?.status == .running
+        work.focusTimer?.status == .running
     }
 
     private var canSendMessage: Bool {
@@ -737,33 +737,35 @@ private struct WorkSessionSummary: View {
                 .lineLimit(1)
             }
 
-            if isTimerRunning {
-                Label("집중 중", systemImage: "timer")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(DesignPalette.sidebarActiveText)
-            } else {
-                Text(elapsedDescription(since: work.startedAt, now: now))
-                    .font(.caption2)
-                    .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
+            if let timer = work.focusTimer {
+                HStack(spacing: 5) {
+                    Text("예상 \(durationDescription(TimeInterval(timer.durationMinutes * 60)))")
+                    Text("·")
+                    Text("실제 \(durationDescription(timer.elapsed(at: now)))")
+                }
+                .font(.caption2)
+                .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
+
+                if isTimerRunning {
+                    Label("집중 중", systemImage: "timer")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(DesignPalette.sidebarActiveText)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private func elapsedDescription(since startDate: Date, now: Date) -> String {
-    let elapsedMinutes = max(0, Int(now.timeIntervalSince(startDate) / 60))
-
-    if elapsedMinutes == 0 {
-        return "방금 시작"
-    }
+private func durationDescription(_ duration: TimeInterval) -> String {
+    let elapsedMinutes = max(0, Int(duration / 60))
     if elapsedMinutes < 60 {
-        return "\(elapsedMinutes)분 진행"
+        return "\(elapsedMinutes)분"
     }
 
     let hours = elapsedMinutes / 60
     let minutes = elapsedMinutes % 60
-    return minutes == 0 ? "\(hours)시간 진행" : "\(hours)시간 \(minutes)분 진행"
+    return minutes == 0 ? "\(hours)시간" : "\(hours)시간 \(minutes)분"
 }
 
 #Preview {
