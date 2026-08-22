@@ -10,12 +10,11 @@ extension Notification.Name {
 final class MenuBarTimerController: ObservableObject {
     private let viewModel: ConversationViewModel
     private var statusItem: NSStatusItem?
-    private var refreshTimer: Timer?
     private var timerSubscription: AnyCancellable?
 
     init(viewModel: ConversationViewModel) {
         self.viewModel = viewModel
-        timerSubscription = viewModel.$focusTimer.sink { [weak self] _ in
+        timerSubscription = viewModel.$focusTimerPresentation.sink { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.refresh()
             }
@@ -24,7 +23,6 @@ final class MenuBarTimerController: ObservableObject {
     }
 
     deinit {
-        refreshTimer?.invalidate()
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -32,7 +30,7 @@ final class MenuBarTimerController: ObservableObject {
     }
 
     private func refresh() {
-        let state = FocusTimerMenuBarState.make(timer: viewModel.focusTimer, now: .now)
+        let state = FocusTimerMenuBarState.make(presentation: viewModel.focusTimerPresentation)
         guard case let .running(taskTitle, remainingText) = state else {
             removeStatusItem()
             return
@@ -43,7 +41,6 @@ final class MenuBarTimerController: ObservableObject {
         statusItem.button?.toolTip = "\(taskTitle) · 남은 시간 \(remainingText)"
         statusItem.button?.setAccessibilityLabel("집중 타이머 남은 시간 \(remainingText)")
         statusItem.isVisible = true
-        startRefreshTimerIfNeeded()
     }
 
     private func makeStatusItem() -> NSStatusItem {
@@ -65,22 +62,7 @@ final class MenuBarTimerController: ObservableObject {
         return statusItem
     }
 
-    private func startRefreshTimerIfNeeded() {
-        guard refreshTimer == nil else { return }
-
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.refresh()
-            }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        refreshTimer = timer
-    }
-
     private func removeStatusItem() {
-        refreshTimer?.invalidate()
-        refreshTimer = nil
-
         guard let statusItem else { return }
         NSStatusBar.system.removeStatusItem(statusItem)
         self.statusItem = nil

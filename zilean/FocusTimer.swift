@@ -57,7 +57,7 @@ nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
     }
 
     func remaining(at now: Date) -> TimeInterval {
-        max(0, targetEndAt.timeIntervalSince(now))
+        max(0, targetEndAt.timeIntervalSince(completedAt ?? now))
     }
 
     func remainingText(at now: Date) -> String {
@@ -69,15 +69,30 @@ nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
     }
 }
 
+nonisolated struct FocusTimerPresentation: Equatable, Sendable {
+    let timer: FocusTimerSession
+    let remainingText: String
+    let progress: Double
+
+    static func make(timer: FocusTimerSession?, now: Date) -> Self? {
+        guard let timer else { return nil }
+        return Self(
+            timer: timer,
+            remainingText: timer.remainingText(at: now),
+            progress: timer.progress(at: now)
+        )
+    }
+}
+
 nonisolated enum FocusTimerMenuBarState: Equatable, Sendable {
     case hidden
     case running(taskTitle: String, remainingText: String)
 
-    static func make(timer: FocusTimerSession?, now: Date) -> Self {
-        guard let timer, timer.status == .running else { return .hidden }
+    static func make(presentation: FocusTimerPresentation?) -> Self {
+        guard let presentation, presentation.timer.status == .running else { return .hidden }
         return .running(
-            taskTitle: timer.taskTitle,
-            remainingText: timer.remainingText(at: now)
+            taskTitle: presentation.timer.taskTitle,
+            remainingText: presentation.remainingText
         )
     }
 }

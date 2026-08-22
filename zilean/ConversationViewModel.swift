@@ -89,6 +89,7 @@ final class ConversationViewModel: ObservableObject {
     @Published private(set) var activeWorkID: UUID?
     @Published private(set) var selectedDirectory: URL?
     @Published private(set) var focusTimer: FocusTimerSession?
+    @Published private(set) var focusTimerPresentation: FocusTimerPresentation?
     @Published private(set) var retrospectiveStatus: RetrospectiveStatus = .idle
     @Published var draft = ""
 
@@ -98,6 +99,7 @@ final class ConversationViewModel: ObservableObject {
     private let workLogStore: WorkLogStore
     private var activeAgentItemID: String?
     private var timerMonitorTask: Task<Void, Never>?
+    private var focusTimerPresentationRefreshTimer: Timer?
     private var pendingTimerResponses: [UUID: ZileanMCPCommandResponse] = [:]
     private var pendingRetrospectiveTimer: FocusTimerSession?
     private var pendingRetrospectiveAnswer: String?
@@ -308,6 +310,7 @@ final class ConversationViewModel: ObservableObject {
     func shutdown() {
         timerMonitorTask?.cancel()
         timerMonitorTask = nil
+        stopFocusTimerPresentationMonitoring()
         client.stop()
         activeAgentItemID = nil
         phase = .disconnected
@@ -342,6 +345,7 @@ final class ConversationViewModel: ObservableObject {
         timer.status = .completed
         timer.completedAt = date
         focusTimer = timer
+        refreshFocusTimerPresentation(at: date)
         pendingRetrospectiveTimer = timer
         retrospectiveStatus = .waiting
         await requestRetrospectiveIfPossible()
@@ -350,6 +354,17 @@ final class ConversationViewModel: ObservableObject {
     func dismissCompletedFocusTimer() {
         guard focusTimer?.status == .completed else { return }
         focusTimer = nil
+        refreshFocusTimerPresentation()
+    }
+
+    func refreshFocusTimerPresentation(at date: Date = .now) {
+        focusTimerPresentation = FocusTimerPresentation.make(timer: focusTimer, now: date)
+
+        if focusTimer?.status == .running {
+            startFocusTimerPresentationMonitoring()
+        } else {
+            stopFocusTimerPresentationMonitoring()
+        }
     }
 
     func retryRetrospective() async {
@@ -504,11 +519,29 @@ final class ConversationViewModel: ObservableObject {
         pendingRetrospectiveAnswer = nil
         retrospectiveStatus = .idle
         focusTimer = session
+        refreshFocusTimerPresentation(at: now)
         if let activeWorkIndex {
             workSessions[activeWorkIndex].title = taskTitle
             workSessions[activeWorkIndex].updatedAt = now
         }
         return .started(command: command, session: session)
+    }
+
+    private func startFocusTimerPresentationMonitoring() {
+        guard focusTimerPresentationRefreshTimer == nil else { return }
+
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refreshFocusTimerPresentation()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        focusTimerPresentationRefreshTimer = timer
+    }
+
+    private func stopFocusTimerPresentationMonitoring() {
+        focusTimerPresentationRefreshTimer?.invalidate()
+        focusTimerPresentationRefreshTimer = nil
     }
 
     private func requestRetrospectiveIfPossible() async {

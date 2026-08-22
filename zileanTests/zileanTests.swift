@@ -194,7 +194,7 @@ struct zileanTests {
         )
     }
 
-    @Test func completedFocusTimerFreezesElapsedTime() {
+    @Test func completedFocusTimerFreezesElapsedAndRemainingTime() {
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let completedAt = startedAt.addingTimeInterval(75)
         let timer = FocusTimerSession(
@@ -207,6 +207,8 @@ struct zileanTests {
         )
 
         #expect(timer.elapsed(at: completedAt.addingTimeInterval(300)) == 75)
+        #expect(timer.remaining(at: completedAt.addingTimeInterval(300)) == 45)
+        #expect(timer.remainingText(at: completedAt.addingTimeInterval(300)) == "00:00:45")
         #expect(timer.progress(at: completedAt.addingTimeInterval(300)) == 0.625)
     }
 
@@ -237,7 +239,7 @@ struct zileanTests {
         #expect(timer.remainingText(at: startedAt.addingTimeInterval(61)) == "00:00:00")
     }
 
-    @Test func menuBarStateOnlyShowsRunningFocusTimer() {
+    @Test func focusTimerPresentationKeepsMainAndMenuBarTimeInSync() {
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let runningTimer = FocusTimerSession(
             workID: UUID(),
@@ -254,14 +256,20 @@ struct zileanTests {
             completedAt: startedAt.addingTimeInterval(75)
         )
 
-        #expect(
-            FocusTimerMenuBarState.make(
-                timer: runningTimer,
-                now: startedAt.addingTimeInterval(10)
-            ) == .running(taskTitle: "재무제표 정리", remainingText: "00:24:50")
+        let runningPresentation = FocusTimerPresentation.make(
+            timer: runningTimer,
+            now: startedAt.addingTimeInterval(10)
         )
-        #expect(FocusTimerMenuBarState.make(timer: completedTimer, now: startedAt) == .hidden)
-        #expect(FocusTimerMenuBarState.make(timer: nil, now: startedAt) == .hidden)
+        let completedPresentation = FocusTimerPresentation.make(timer: completedTimer, now: startedAt)
+
+        #expect(runningPresentation?.remainingText == "00:24:50")
+        #expect(runningPresentation?.progress == 10.0 / 1_500.0)
+        #expect(
+            FocusTimerMenuBarState.make(presentation: runningPresentation)
+                == .running(taskTitle: "재무제표 정리", remainingText: runningPresentation?.remainingText ?? "")
+        )
+        #expect(FocusTimerMenuBarState.make(presentation: completedPresentation) == .hidden)
+        #expect(FocusTimerMenuBarState.make(presentation: nil) == .hidden)
     }
 
     @Test func savesWorkLogInDateDirectoryWithoutOverwritingExistingRecord() throws {
