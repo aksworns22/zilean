@@ -26,6 +26,7 @@ struct WorkSession: Identifiable, Equatable {
     let startedAt: Date
     var updatedAt: Date
     var messages: [ConversationMessage]
+    var focusTimer: FocusTimerSession?
 
     init(
         id: UUID = UUID(),
@@ -34,7 +35,8 @@ struct WorkSession: Identifiable, Equatable {
         title: String,
         startedAt: Date = .now,
         updatedAt: Date = .now,
-        messages: [ConversationMessage] = []
+        messages: [ConversationMessage] = [],
+        focusTimer: FocusTimerSession? = nil
     ) {
         self.id = id
         self.threadID = threadID
@@ -43,6 +45,7 @@ struct WorkSession: Identifiable, Equatable {
         self.startedAt = startedAt
         self.updatedAt = updatedAt
         self.messages = messages
+        self.focusTimer = focusTimer
     }
 }
 
@@ -116,7 +119,12 @@ final class ConversationViewModel: ObservableObject {
     }
 
     var recentWorkSessions: [WorkSession] {
-        workSessions.sorted { $0.updatedAt > $1.updatedAt }
+        workSessions
+            .compactMap { work in
+                work.focusTimer.map { (work: work, timer: $0) }
+            }
+            .sorted { $0.timer.startedAt > $1.timer.startedAt }
+            .map(\.work)
     }
 
     var messages: [ConversationMessage] {
@@ -345,6 +353,7 @@ final class ConversationViewModel: ObservableObject {
         timer.status = .completed
         timer.completedAt = date
         focusTimer = timer
+        updateFocusTimer(timer)
         refreshFocusTimerPresentation(at: date)
         pendingRetrospectiveTimer = timer
         retrospectiveStatus = .waiting
@@ -523,8 +532,14 @@ final class ConversationViewModel: ObservableObject {
         if let activeWorkIndex {
             workSessions[activeWorkIndex].title = taskTitle
             workSessions[activeWorkIndex].updatedAt = now
+            workSessions[activeWorkIndex].focusTimer = session
         }
         return .started(command: command, session: session)
+    }
+
+    private func updateFocusTimer(_ timer: FocusTimerSession) {
+        guard let workIndex = workSessions.firstIndex(where: { $0.id == timer.workID }) else { return }
+        workSessions[workIndex].focusTimer = timer
     }
 
     private func startFocusTimerPresentationMonitoring() {
