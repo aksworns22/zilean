@@ -10,9 +10,21 @@ import Combine
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = ConversationViewModel()
+    @ObservedObject var viewModel: ConversationViewModel
+    @StateObject private var menuBarTimerController: MenuBarTimerController
     @State private var selectedDestination: SidebarDestination = .newWork
     @State private var minimizedTimerID: UUID?
+    @State private var isTimerSetupPresented = false
+    @State private var timerSetupTaskTitle = ""
+    @State private var timerSetupDurationMinutes = 25
+    @State private var timerSetupError: String?
+
+    init(viewModel: ConversationViewModel) {
+        self.viewModel = viewModel
+        _menuBarTimerController = StateObject(
+            wrappedValue: MenuBarTimerController(viewModel: viewModel)
+        )
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -25,12 +37,16 @@ struct ContentView: View {
         .frame(minWidth: 800, minHeight: 560)
         .background(Color(nsColor: .windowBackgroundColor))
         .ignoresSafeArea(.container, edges: .top)
+        .environmentObject(menuBarTimerController)
         .task {
             viewModel.startTimerMonitoring()
             await viewModel.connect()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             viewModel.shutdown()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .zileanShowFocusTimer)) { _ in
+            minimizedTimerID = nil
         }
         .onDisappear {
             viewModel.shutdown()
@@ -55,6 +71,7 @@ struct ContentView: View {
                     systemImage: "clock.arrow.circlepath",
                     destination: .review
                 ) {
+                    closeTimerSetup()
                     selectedDestination = .review
                 }
             }
@@ -163,13 +180,20 @@ struct ContentView: View {
 
     @ViewBuilder
     private var workspace: some View {
-        if let timer = viewModel.focusTimer, minimizedTimerID != timer.id {
+        if let presentation = viewModel.focusTimerPresentation,
+           minimizedTimerID != presentation.timer.id {
             FocusTimerView(
-                timer: timer,
-                minimize: { minimizedTimerID = timer.id },
+                timer: presentation.timer,
+                remainingText: presentation.remainingText,
+                progress: presentation.progress,
+                minimize: { minimizedTimerID = presentation.timer.id },
                 primaryAction: {
-                    if timer.status == .running {
-                        viewModel.completeFocusTimer()
+                    if presentation.timer.status == .running {
+                        Task {
+                            await viewModel.completeFocusTimer()
+                            minimizedTimerID = presentation.timer.id
+                            selectedDestination = .currentWork
+                        }
                     } else {
                         viewModel.dismissCompletedFocusTimer()
                         minimizedTimerID = nil
@@ -339,28 +363,61 @@ struct ContentView: View {
 
     private var composer: some View {
         VStack(spacing: 10) {
-            if let detail = viewModel.phase.detail {
+            if let detail = viewModel.phase.detail ?? viewModel.retrospectiveError {
                 ErrorBanner(
                     message: detail,
-                    showsRetry: viewModel.canRetryConnection,
-                    retry: { Task { await viewModel.connect() } }
+                    showsRetry: viewModel.canRetryConnection || viewModel.canRetryRetrospective,
+                    retryTitle: viewModel.canRetryRetrospective ? "회고 재시도" : "연결 재시도",
+                    retry: {
+                        Task {
+                            if viewModel.canRetryRetrospective {
+                                await viewModel.retryRetrospective()
+                            } else {
+                                await viewModel.connect()
+                            }
+                        }
+                    }
                 )
+            }
+
+            if isTimerSetupPresented {
+                DirectTimerSetupCard(
+                    taskTitle: $timerSetupTaskTitle,
+                    durationMinutes: $timerSetupDurationMinutes,
+                    hasActiveWork: viewModel.hasConversation,
+                    errorMessage: timerSetupError,
+                    close: closeTimerSetup,
+                    start: startDirectTimer
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             HStack(alignment: .bottom, spacing: 8) {
                 Button {
-                    startNewWork(choosingDirectory: true)
+                    toggleTimerSetup()
                 } label: {
-                    Image(systemName: "plus")
+                    Image(systemName: isTimerSetupPresented ? "xmark" : "plus")
                         .font(.body.weight(.medium))
                         .frame(width: 30, height: 30)
                         .contentShape(Circle())
+                        .background(
+                            isTimerSetupPresented
+                                ? DesignPalette.timerSetupButtonBackground
+                                : Color.clear,
+                            in: Circle()
+                        )
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(viewModel.phase.isBusy)
-                .accessibilityLabel("작업 폴더 선택")
-                .help("새 작업 폴더 선택")
+                .foregroundStyle(
+                    isTimerSetupPresented
+                        ? DesignPalette.timerSetupButtonForeground
+                        : Color.secondary
+                )
+                .disabled(viewModel.phase.isBusy || selectedDestination == .review)
+                .accessibilityLabel(
+                    isTimerSetupPresented ? "타이머 설정 닫기" : "타이머 직접 설정"
+                )
+                .help(isTimerSetupPresented ? "타이머 설정 닫기" : "타이머 직접 설정")
 
                 TextField("질리언에게 메시지 보내기", text: $viewModel.draft, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -423,6 +480,7 @@ struct ContentView: View {
     }
 
     private func startNewWork(choosingDirectory: Bool) {
+        closeTimerSetup()
         selectedDestination = .newWork
 
         if choosingDirectory, !chooseDirectory() {
@@ -444,8 +502,54 @@ struct ContentView: View {
         Task { await viewModel.sendMessage() }
     }
 
+    private func toggleTimerSetup() {
+        guard !viewModel.phase.isBusy, selectedDestination != .review else { return }
+
+        if isTimerSetupPresented {
+            closeTimerSetup()
+            return
+        }
+
+        if viewModel.focusTimer?.status == .running {
+            minimizedTimerID = nil
+            return
+        }
+
+        timerSetupTaskTitle = viewModel.activeWork?.title ?? ""
+        timerSetupDurationMinutes = 25
+        timerSetupError = viewModel.hasConversation
+            ? nil
+            : "타이머를 시작하려면 먼저 작업을 선택하세요."
+        withAnimation(.easeOut(duration: 0.2)) {
+            isTimerSetupPresented = true
+        }
+    }
+
+    private func closeTimerSetup() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            isTimerSetupPresented = false
+        }
+        timerSetupError = nil
+    }
+
+    private func startDirectTimer() {
+        let response = viewModel.startFocusTimer(
+            taskTitle: timerSetupTaskTitle,
+            durationMinutes: timerSetupDurationMinutes
+        )
+        guard response.success else {
+            timerSetupError = response.message
+            return
+        }
+
+        timerSetupError = nil
+        isTimerSetupPresented = false
+        minimizedTimerID = nil
+    }
+
     private func open(_ work: WorkSession) {
         guard !viewModel.phase.isBusy else { return }
+        closeTimerSetup()
         viewModel.selectWork(id: work.id)
         selectedDestination = .currentWork
     }
@@ -466,14 +570,262 @@ private enum SidebarDestination {
     case currentWork
 }
 
+private struct DirectTimerSetupCard: View {
+    @Binding var taskTitle: String
+    @Binding var durationMinutes: Int
+
+    let hasActiveWork: Bool
+    let errorMessage: String?
+    let close: () -> Void
+    let start: () -> Void
+
+    private let presets = [25, 45, 60, 120]
+    private let durationStep = 5
+    private let minimumDuration = 5
+    private let maximumDuration = 1_440
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .center) {
+                Text("타이머 직접 설정")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(DesignPalette.timerSetupText)
+
+                Spacer()
+
+                Button(action: close) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundStyle(DesignPalette.timerSetupMutedText)
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("타이머 설정 닫기")
+            }
+            .padding(.bottom, 24)
+
+            Text("작업 이름")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(DesignPalette.timerSetupMutedText)
+
+            TextField("예 · DART 공시 작업", text: $taskTitle)
+                .textFieldStyle(.plain)
+                .font(.body)
+                .foregroundStyle(DesignPalette.timerSetupText)
+                .padding(.horizontal, 16)
+                .frame(height: 54)
+                .background(
+                    Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+                }
+                .padding(.top, 10)
+
+            Text("시간")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(DesignPalette.timerSetupMutedText)
+                .padding(.top, 22)
+
+            HStack(spacing: 0) {
+                durationButton(
+                    systemImage: "minus",
+                    accessibilityLabel: "집중 시간 5분 줄이기",
+                    isEnabled: durationMinutes > minimumDuration
+                ) {
+                    adjustDuration(by: -durationStep)
+                }
+
+                Spacer(minLength: 16)
+
+                Text(formattedDuration)
+                    .font(.system(size: 29, weight: .semibold, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundStyle(DesignPalette.timerSetupText)
+                    .accessibilityLabel("집중 시간 \(formattedDuration)")
+
+                Spacer(minLength: 16)
+
+                durationButton(
+                    systemImage: "plus",
+                    accessibilityLabel: "집중 시간 5분 늘리기",
+                    isEnabled: durationMinutes < maximumDuration
+                ) {
+                    adjustDuration(by: durationStep)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 68)
+            .background(
+                DesignPalette.timerSetupControlBackground,
+                in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            )
+            .padding(.top, 10)
+
+            HStack(spacing: 9) {
+                ForEach(presets, id: \.self) { preset in
+                    Button {
+                        durationMinutes = preset
+                    } label: {
+                        Text(presetLabel(for: preset))
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(
+                                durationMinutes == preset
+                                    ? Color.white
+                                    : DesignPalette.timerSetupText
+                            )
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 44)
+                            .background(
+                                durationMinutes == preset
+                                    ? DesignPalette.userBubble
+                                    : Color(nsColor: .textBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .stroke(
+                                        durationMinutes == preset
+                                            ? Color.clear
+                                            : Color.primary.opacity(0.14),
+                                        lineWidth: 1
+                                    )
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("집중 시간 \(presetLabel(for: preset))")
+                    .accessibilityAddTraits(durationMinutes == preset ? .isSelected : [])
+                }
+            }
+            .padding(.top, 12)
+
+            Divider()
+                .padding(.vertical, 22)
+
+            HStack(alignment: .center, spacing: 12) {
+                Text(helperText)
+                    .font(.callout)
+                    .foregroundStyle(helperTextColor)
+                    .lineLimit(2)
+
+                Spacer(minLength: 8)
+
+                Button("시작", action: start)
+                    .buttonStyle(.plain)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 94, height: 52)
+                    .background(
+                        DesignPalette.userBubble,
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                    .opacity(canStart ? 1 : 0.45)
+                    .disabled(!canStart)
+                    .accessibilityLabel("집중 타이머 시작")
+            }
+        }
+        .padding(26)
+        .frame(maxWidth: 462)
+        .background(
+            Color(nsColor: .windowBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 22, y: 10)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var canStart: Bool {
+        hasActiveWork
+            && !taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (minimumDuration...maximumDuration).contains(durationMinutes)
+            && durationMinutes.isMultiple(of: durationStep)
+    }
+
+    private var formattedDuration: String {
+        let seconds = durationMinutes * 60
+        return String(
+            format: "%02d:%02d:%02d",
+            seconds / 3_600,
+            (seconds % 3_600) / 60,
+            seconds % 60
+        )
+    }
+
+    private var helperText: String {
+        if let errorMessage {
+            return errorMessage
+        }
+        if !hasActiveWork {
+            return "타이머를 시작하려면 먼저 작업을 선택하세요."
+        }
+        return "5분 단위로 조절돼요"
+    }
+
+    private var helperTextColor: Color {
+        errorMessage == nil && hasActiveWork ? .secondary : .red
+    }
+
+    private func adjustDuration(by amount: Int) {
+        durationMinutes = min(
+            maximumDuration,
+            max(minimumDuration, durationMinutes + amount)
+        )
+    }
+
+    private func presetLabel(for minutes: Int) -> String {
+        switch minutes {
+        case 60:
+            return "1시간"
+        case 120:
+            return "2시간"
+        default:
+            return "\(minutes)분"
+        }
+    }
+
+    private func durationButton(
+        systemImage: String,
+        accessibilityLabel: String,
+        isEnabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(DesignPalette.timerSetupText)
+                .frame(width: 46, height: 48)
+                .background(
+                    Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+                }
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.35)
+        .disabled(!isEnabled)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
 private struct FocusTimerView: View {
     let timer: FocusTimerSession
+    let remainingText: String
+    let progress: Double
     let minimize: () -> Void
     let primaryAction: () -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 HStack {
                     Spacer()
                     Button(action: minimize) {
@@ -506,17 +858,23 @@ private struct FocusTimerView: View {
                             .foregroundStyle(.white.opacity(0.52))
                             .lineLimit(1)
 
-                        Text(formattedTime(timer.elapsed(at: context.date)))
+                        Text(remainingText)
                             .font(.system(size: 92, weight: .medium, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(.white.opacity(0.94))
                             .lineLimit(1)
                             .minimumScaleFactor(0.55)
-                            .accessibilityLabel("경과 시간 \(formattedTime(timer.elapsed(at: context.date)))")
+                            .accessibilityLabel(
+                                "남은 시간 \(remainingText)"
+                            )
 
                         HStack(spacing: 10) {
                             Text("예상")
-                            Text(formattedTime(TimeInterval(timer.durationMinutes * 60)))
+                            Text(
+                                FocusTimerTimeFormatter.string(
+                                    from: TimeInterval(timer.durationMinutes * 60)
+                                )
+                            )
                                 .monospacedDigit()
                         }
                         .font(.title3.weight(.medium))
@@ -524,12 +882,12 @@ private struct FocusTimerView: View {
                     }
 
                     VStack(spacing: 13) {
-                        ProgressView(value: timer.progress(at: context.date))
+                        ProgressView(value: progress)
                             .progressViewStyle(.linear)
                             .tint(.white.opacity(0.72))
                             .accessibilityLabel("집중 시간 진행률")
                             .accessibilityValue(
-                                "\(Int(timer.progress(at: context.date) * 100))퍼센트"
+                                "\(Int(progress * 100))퍼센트"
                             )
 
                         Text(timer.status == .running ? "집중 중" : "완료됨")
@@ -555,26 +913,16 @@ private struct FocusTimerView: View {
                 .padding(.horizontal, 44)
 
                 Spacer(minLength: 76)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(DesignPalette.focusBackground)
         }
-    }
-
-    private func formattedTime(_ interval: TimeInterval) -> String {
-        let seconds = max(0, Int(interval))
-        return String(
-            format: "%02d:%02d:%02d",
-            seconds / 3_600,
-            (seconds % 3_600) / 60,
-            seconds % 60
-        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DesignPalette.focusBackground)
     }
 }
 
 private struct ErrorBanner: View {
     let message: String
     let showsRetry: Bool
+    let retryTitle: String
     let retry: () -> Void
 
     var body: some View {
@@ -586,7 +934,7 @@ private struct ErrorBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
             if showsRetry {
-                Button("연결 재시도", action: retry)
+                Button(retryTitle, action: retry)
             }
         }
         .padding(10)
@@ -705,6 +1053,31 @@ private enum DesignPalette {
         green: 46.0 / 255.0,
         blue: 52.0 / 255.0
     )
+    static let timerSetupText = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
+    static let timerSetupMutedText = Color(
+        red: 101.0 / 255.0,
+        green: 127.0 / 255.0,
+        blue: 132.0 / 255.0
+    )
+    static let timerSetupControlBackground = Color(
+        red: 241.0 / 255.0,
+        green: 245.0 / 255.0,
+        blue: 246.0 / 255.0
+    )
+    static let timerSetupButtonBackground = Color(
+        red: 226.0 / 255.0,
+        green: 237.0 / 255.0,
+        blue: 238.0 / 255.0
+    )
+    static let timerSetupButtonForeground = Color(
+        red: 14.0 / 255.0,
+        green: 46.0 / 255.0,
+        blue: 52.0 / 255.0
+    )
 }
 
 private struct WorkSessionSummary: View {
@@ -758,5 +1131,5 @@ private func durationDescription(_ duration: TimeInterval) -> String {
 }
 
 #Preview {
-    ContentView()
+    ContentView(viewModel: ConversationViewModel())
 }

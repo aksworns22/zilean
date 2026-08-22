@@ -5,6 +5,22 @@ nonisolated enum FocusTimerStatus: String, Codable, Equatable, Sendable {
     case completed
 }
 
+nonisolated enum FocusTimerTimeFormatter {
+    static func string(from interval: TimeInterval) -> String {
+        string(seconds: max(0, Int(interval)))
+    }
+
+    static func string(seconds: Int) -> String {
+        let seconds = max(0, seconds)
+        return String(
+            format: "%02d:%02d:%02d",
+            seconds / 3_600,
+            (seconds % 3_600) / 60,
+            seconds % 60
+        )
+    }
+}
+
 nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
     let id: UUID
     let workID: UUID
@@ -40,8 +56,44 @@ nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
         max(0, (completedAt ?? now).timeIntervalSince(startedAt))
     }
 
+    func remaining(at now: Date) -> TimeInterval {
+        max(0, targetEndAt.timeIntervalSince(completedAt ?? now))
+    }
+
+    func remainingText(at now: Date) -> String {
+        FocusTimerTimeFormatter.string(from: remaining(at: now))
+    }
+
     func progress(at now: Date) -> Double {
         min(1, elapsed(at: now) / TimeInterval(durationMinutes * 60))
+    }
+}
+
+nonisolated struct FocusTimerPresentation: Equatable, Sendable {
+    let timer: FocusTimerSession
+    let remainingText: String
+    let progress: Double
+
+    static func make(timer: FocusTimerSession?, now: Date) -> Self? {
+        guard let timer else { return nil }
+        return Self(
+            timer: timer,
+            remainingText: timer.remainingText(at: now),
+            progress: timer.progress(at: now)
+        )
+    }
+}
+
+nonisolated enum FocusTimerMenuBarState: Equatable, Sendable {
+    case hidden
+    case running(taskTitle: String, remainingText: String)
+
+    static func make(presentation: FocusTimerPresentation?) -> Self {
+        guard let presentation, presentation.timer.status == .running else { return .hidden }
+        return .running(
+            taskTitle: presentation.timer.taskTitle,
+            remainingText: presentation.remainingText
+        )
     }
 }
 

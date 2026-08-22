@@ -10,7 +10,12 @@ import SwiftUI
 
 @main
 struct ZileanApp: App {
+    @StateObject private var viewModel: ConversationViewModel
+
     init() {
+        let viewModel = ConversationViewModel()
+        _viewModel = StateObject(wrappedValue: viewModel)
+
         guard ZileanMCPServer.shouldRun else { return }
         ZileanMCPServer.run()
         exit(EXIT_SUCCESS)
@@ -18,7 +23,8 @@ struct ZileanApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(viewModel: viewModel)
+                .preferredColorScheme(.light)
         }
         .windowStyle(.hiddenTitleBar)
     }

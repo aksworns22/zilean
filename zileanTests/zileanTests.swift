@@ -194,7 +194,7 @@ struct zileanTests {
         )
     }
 
-    @Test func completedFocusTimerFreezesElapsedTime() {
+    @Test func completedFocusTimerFreezesElapsedAndRemainingTime() {
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let completedAt = startedAt.addingTimeInterval(75)
         let timer = FocusTimerSession(
@@ -207,7 +207,99 @@ struct zileanTests {
         )
 
         #expect(timer.elapsed(at: completedAt.addingTimeInterval(300)) == 75)
+        #expect(timer.remaining(at: completedAt.addingTimeInterval(300)) == 45)
+        #expect(timer.remainingText(at: completedAt.addingTimeInterval(300)) == "00:00:45")
         #expect(timer.progress(at: completedAt.addingTimeInterval(300)) == 0.625)
+    }
+
+    @Test func focusTimerRemainingTimeCountsDownFromTargetEnd() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let timer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 2,
+            startedAt: startedAt
+        )
+
+        #expect(timer.remaining(at: startedAt) == 120)
+        #expect(timer.remaining(at: startedAt.addingTimeInterval(15)) == 105)
+        #expect(timer.remainingText(at: startedAt.addingTimeInterval(15)) == "00:01:45")
+    }
+
+    @Test func focusTimerRemainingTimeClampsAtZero() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let timer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 1,
+            startedAt: startedAt
+        )
+
+        #expect(timer.remaining(at: startedAt.addingTimeInterval(61)) == 0)
+        #expect(timer.remainingText(at: startedAt.addingTimeInterval(61)) == "00:00:00")
+    }
+
+    @Test func focusTimerPresentationKeepsMainAndMenuBarTimeInSync() {
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let runningTimer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 25,
+            startedAt: startedAt
+        )
+        let completedTimer = FocusTimerSession(
+            workID: UUID(),
+            taskTitle: "재무제표 정리",
+            durationMinutes: 25,
+            startedAt: startedAt,
+            status: .completed,
+            completedAt: startedAt.addingTimeInterval(75)
+        )
+
+        let runningPresentation = FocusTimerPresentation.make(
+            timer: runningTimer,
+            now: startedAt.addingTimeInterval(10)
+        )
+        let completedPresentation = FocusTimerPresentation.make(timer: completedTimer, now: startedAt)
+
+        #expect(runningPresentation?.remainingText == "00:24:50")
+        #expect(runningPresentation?.progress == 10.0 / 1_500.0)
+        #expect(
+            FocusTimerMenuBarState.make(presentation: runningPresentation)
+                == .running(taskTitle: "재무제표 정리", remainingText: runningPresentation?.remainingText ?? "")
+        )
+        #expect(FocusTimerMenuBarState.make(presentation: completedPresentation) == .hidden)
+        #expect(FocusTimerMenuBarState.make(presentation: nil) == .hidden)
+    }
+
+    @Test func savesWorkLogInDateDirectoryWithoutOverwritingExistingRecord() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 9 * 60 * 60))
+        let completedAt = try #require(
+            calendar.date(
+                from: DateComponents(year: 2026, month: 8, day: 22, hour: 10, minute: 30)
+            )
+        )
+        let entry = WorkLogEntry(
+            taskTitle: "DART / 공시: 초안",
+            startedAt: completedAt.addingTimeInterval(-75),
+            completedAt: completedAt,
+            retrospective: "핵심 숫자를 빠르게 확인했다. 다음에는 공시 요약을 팀에 공유한다."
+        )
+        let store = WorkLogStore(calendar: calendar)
+
+        let firstURL = try store.save(entry, in: directory)
+        let secondURL = try store.save(entry, in: directory)
+        let markdown = try String(contentsOf: firstURL, encoding: .utf8)
+
+        #expect(firstURL.path.hasSuffix("work-records/2026-08-22/DART-공시-초안.md"))
+        #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
+        #expect(markdown.contains("task_title: \"DART / 공시: 초안\""))
+        #expect(markdown.contains("elapsed_seconds: 75"))
+        #expect(markdown.contains("## 회고와 후속 작업"))
+        #expect(markdown.contains("다음에는 공시 요약을 팀에 공유한다."))
     }
 
     @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
@@ -247,11 +339,235 @@ struct zileanTests {
         #expect(response.state == FocusTimerStatus.running.rawValue)
         #expect(try commandStore.pendingCommands().isEmpty)
 
-        viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
         #expect(viewModel.focusTimer?.status == .completed)
         #expect(viewModel.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.status == .completed)
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
+    }
+
+    @Test @MainActor func requestsRetrospectiveWhenFocusTimerCompletes() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "회고 대상 작업",
+            durationMinutes: 25,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+
+        let completedAt = startedAt.addingTimeInterval(75)
+        await viewModel.completeFocusTimer(at: completedAt)
+
+        let prompt = try #require(client.startTurnTexts.last)
+        #expect(viewModel.focusTimer?.status == .completed)
+        #expect(viewModel.retrospectiveStatus == .requesting)
+        #expect(prompt.contains("회고 대상 작업"))
+        #expect(prompt.contains("계획한 집중 시간: 25분"))
+        #expect(prompt.contains("실제 경과 시간: 75초"))
+
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(viewModel.retrospectiveStatus == .prompted)
+    }
+
+    @Test @MainActor func keepsRetrospectiveRetryableAfterTurnFailure() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "재시도 작업",
+            durationMinutes: 10,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+
+        client.startTurnError = TestError.preparationFailed
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(10))
+
+        #expect(viewModel.focusTimer?.status == .completed)
+        #expect(viewModel.retrospectiveStatus == .failed(TestError.preparationFailed.localizedDescription))
+        #expect(viewModel.canRetryRetrospective)
+
+        client.startTurnError = nil
+        await viewModel.retryRetrospective()
+
+        #expect(client.startTurnTexts.count == 2)
+        #expect(viewModel.retrospectiveStatus == .requesting)
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        #expect(viewModel.retrospectiveStatus == .prompted)
+    }
+
+    @Test @MainActor func recordsRetrospectiveAnswerAndDoesNotPromptTwice() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let command = ZileanMCPCommand(
+            taskTitle: "응답 기록 작업",
+            durationMinutes: 5,
+            createdAt: startedAt
+        )
+        try commandStore.enqueue(command)
+        viewModel.processPendingTimerCommands(now: startedAt)
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(30))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        viewModel.draft = "핵심 로직을 정리했고 다음에는 테스트를 보강할게요."
+        await viewModel.sendMessage()
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(viewModel.messages.last?.text == "핵심 로직을 정리했고 다음에는 테스트를 보강할게요.")
+
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(60))
+        #expect(client.startTurnTexts.count == 2)
+    }
+
+    @Test @MainActor func savesRetrospectiveAnswerAsWorkLog() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try commandStore.enqueue(
+            ZileanMCPCommand(
+                taskTitle: "작업 기록 저장",
+                durationMinutes: 25,
+                createdAt: startedAt
+            )
+        )
+        viewModel.processPendingTimerCommands(now: startedAt)
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(90))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        viewModel.draft = "핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."
+
+        await viewModel.sendMessage()
+
+        let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
+        let dateDirectory = try #require(
+            try FileManager.default.contentsOfDirectory(
+                at: recordsDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        let recordURL = try #require(
+            try FileManager.default.contentsOfDirectory(
+                at: dateDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        let markdown = try String(contentsOf: recordURL, encoding: .utf8)
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(markdown.contains("# 작업 기록 저장"))
+        #expect(markdown.contains("핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."))
+    }
+
+    @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 25,
+            at: startedAt
+        )
+
+        #expect(response.success)
+        #expect(viewModel.focusTimer?.taskTitle == "DART 공시 작업")
+        #expect(viewModel.focusTimer?.durationMinutes == 25)
+        #expect(viewModel.focusTimer?.startedAt == startedAt)
+        #expect(viewModel.activeWork?.title == "DART 공시 작업")
+    }
+
+    @Test @MainActor func directFocusTimerRejectsInvalidDuration() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 0
+        )
+
+        #expect(!response.success)
+        #expect(response.errorCode == "invalid_arguments")
+        #expect(viewModel.focusTimer == nil)
+    }
+
+    @Test @MainActor func directFocusTimerRequiresActiveWork() {
+        let viewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer()
+        )
+
+        let response = viewModel.startFocusTimer(
+            taskTitle: "DART 공시 작업",
+            durationMinutes: 25
+        )
+
+        #expect(!response.success)
+        #expect(response.errorCode == "missing_active_work")
+        #expect(viewModel.focusTimer == nil)
     }
 
     @Test @MainActor func rejectsSecondTimerWhileOneIsRunning() async throws {
@@ -467,7 +783,9 @@ private final class StubAppServerClient: CodexAppServerServing {
     var onEvent: ((AppServerEvent) -> Void)?
     var isConnected = false
     var onStartThread: ((URL) -> String?)?
+    var startTurnError: Error?
     private(set) var instructionsAtThreadStart: String?
+    private(set) var startTurnTexts: [String] = []
     private(set) var startThreadCallCount = 0
     private var nextThreadIndex = 0
 
@@ -483,7 +801,11 @@ private final class StubAppServerClient: CodexAppServerServing {
     }
 
     func startTurn(threadID: String, text: String) async throws -> String {
-        "turn-1"
+        startTurnTexts.append(text)
+        if let startTurnError {
+            throw startTurnError
+        }
+        return "turn-\(startTurnTexts.count)"
     }
 
     func stop() {
