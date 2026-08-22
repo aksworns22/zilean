@@ -272,6 +272,36 @@ struct zileanTests {
         #expect(FocusTimerMenuBarState.make(presentation: nil) == .hidden)
     }
 
+    @Test func savesWorkLogInDateDirectoryWithoutOverwritingExistingRecord() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 9 * 60 * 60))
+        let completedAt = try #require(
+            calendar.date(
+                from: DateComponents(year: 2026, month: 8, day: 22, hour: 10, minute: 30)
+            )
+        )
+        let entry = WorkLogEntry(
+            taskTitle: "DART / 공시: 초안",
+            startedAt: completedAt.addingTimeInterval(-75),
+            completedAt: completedAt,
+            retrospective: "핵심 숫자를 빠르게 확인했다. 다음에는 공시 요약을 팀에 공유한다."
+        )
+        let store = WorkLogStore(calendar: calendar)
+
+        let firstURL = try store.save(entry, in: directory)
+        let secondURL = try store.save(entry, in: directory)
+        let markdown = try String(contentsOf: firstURL, encoding: .utf8)
+
+        #expect(firstURL.path.hasSuffix("work-records/2026-08-22/DART-공시-초안.md"))
+        #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
+        #expect(markdown.contains("task_title: \"DART / 공시: 초안\""))
+        #expect(markdown.contains("elapsed_seconds: 75"))
+        #expect(markdown.contains("## 회고와 후속 작업"))
+        #expect(markdown.contains("다음에는 공시 요약을 팀에 공유한다."))
+    }
+
     @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -421,6 +451,54 @@ struct zileanTests {
 
         await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(60))
         #expect(client.startTurnTexts.count == 2)
+    }
+
+    @Test @MainActor func savesRetrospectiveAnswerAsWorkLog() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try commandStore.enqueue(
+            ZileanMCPCommand(
+                taskTitle: "작업 기록 저장",
+                durationMinutes: 25,
+                createdAt: startedAt
+            )
+        )
+        viewModel.processPendingTimerCommands(now: startedAt)
+        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(90))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        viewModel.draft = "핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."
+
+        await viewModel.sendMessage()
+
+        let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
+        let dateDirectory = try #require(
+            try FileManager.default.contentsOfDirectory(
+                at: recordsDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        let recordURL = try #require(
+            try FileManager.default.contentsOfDirectory(
+                at: dateDirectory,
+                includingPropertiesForKeys: nil
+            ).first
+        )
+        let markdown = try String(contentsOf: recordURL, encoding: .utf8)
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(markdown.contains("# 작업 기록 저장"))
+        #expect(markdown.contains("핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."))
     }
 
     @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
