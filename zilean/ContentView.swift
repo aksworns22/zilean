@@ -138,8 +138,7 @@ struct ContentView: View {
                                     work: work,
                                     now: context.date,
                                     showsDetails: false,
-                                    isActive: isSelected(work),
-                                    isTimerRunning: isTimerRunning(for: work)
+                                    isActive: isSelected(work)
                                 )
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -455,10 +454,6 @@ struct ContentView: View {
         selectedDestination == .currentWork && viewModel.activeWorkID == work.id
     }
 
-    private func isTimerRunning(for work: WorkSession) -> Bool {
-        work.focusTimer?.status == .running
-    }
-
     private var canSendMessage: Bool {
         selectedDestination != .review && viewModel.canSend
     }
@@ -717,7 +712,6 @@ private struct WorkSessionSummary: View {
     let now: Date
     let showsDetails: Bool
     var isActive = false
-    var isTimerRunning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: showsDetails ? 7 : 3) {
@@ -746,11 +740,6 @@ private struct WorkSessionSummary: View {
                 .font(.caption2)
                 .foregroundStyle(isActive ? DesignPalette.sidebarActiveText : Color.secondary)
 
-                if isTimerRunning {
-                    Label("집중 중", systemImage: "timer")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(DesignPalette.sidebarActiveText)
-                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
