@@ -75,7 +75,7 @@ nonisolated struct FocusTimerPresentation: Equatable, Sendable {
     let progress: Double
 
     static func make(timer: FocusTimerSession?, now: Date) -> Self? {
-        guard let timer else { return nil }
+        guard let timer, timer.status == .running else { return nil }
         return Self(
             timer: timer,
             remainingText: timer.remainingText(at: now),
