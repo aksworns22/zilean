@@ -2,10 +2,6 @@ import AppKit
 import Combine
 import Foundation
 
-extension Notification.Name {
-    static let zileanShowFocusTimer = Notification.Name("zilean.showFocusTimer")
-}
-
 @MainActor
 final class MenuBarTimerController: ObservableObject {
     private let viewModel: ConversationViewModel
@@ -69,7 +65,6 @@ final class MenuBarTimerController: ObservableObject {
             return
         }
 
-        NotificationCenter.default.post(name: .zileanShowFocusTimer, object: nil)
         NSApp.activate(ignoringOtherApps: true)
 
         guard let window = NSApp.windows.first(where: { $0.canBecomeKey }) else { return }

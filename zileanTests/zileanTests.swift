@@ -268,6 +268,7 @@ struct zileanTests {
             FocusTimerMenuBarState.make(presentation: runningPresentation)
                 == .running(taskTitle: "재무제표 정리", remainingText: runningPresentation?.remainingText ?? "")
         )
+        #expect(completedPresentation == nil)
         #expect(FocusTimerMenuBarState.make(presentation: completedPresentation) == .hidden)
         #expect(FocusTimerMenuBarState.make(presentation: nil) == .hidden)
     }
@@ -342,6 +343,7 @@ struct zileanTests {
         await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(6))
         #expect(viewModel.focusTimer?.status == .completed)
         #expect(viewModel.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
+        #expect(viewModel.focusTimerPresentation == nil)
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.status == .completed)
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
     }

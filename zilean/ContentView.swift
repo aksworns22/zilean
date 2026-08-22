@@ -6,14 +6,12 @@
 //
 
 import AppKit
-import Combine
 import SwiftUI
 
 struct ContentView: View {
     @ObservedObject var viewModel: ConversationViewModel
     @StateObject private var menuBarTimerController: MenuBarTimerController
     @State private var selectedDestination: SidebarDestination = .newWork
-    @State private var minimizedTimerID: UUID?
     @State private var isTimerSetupPresented = false
     @State private var timerSetupTaskTitle = ""
     @State private var timerSetupDurationMinutes = 25
@@ -44,9 +42,6 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             viewModel.shutdown()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .zileanShowFocusTimer)) { _ in
-            minimizedTimerID = nil
         }
         .onDisappear {
             viewModel.shutdown()
@@ -180,23 +175,15 @@ struct ContentView: View {
 
     @ViewBuilder
     private var workspace: some View {
-        if let presentation = viewModel.focusTimerPresentation,
-           minimizedTimerID != presentation.timer.id {
+        if let presentation = viewModel.focusTimerPresentation {
             FocusTimerView(
                 timer: presentation.timer,
                 remainingText: presentation.remainingText,
                 progress: presentation.progress,
-                minimize: { minimizedTimerID = presentation.timer.id },
                 primaryAction: {
-                    if presentation.timer.status == .running {
-                        Task {
-                            await viewModel.completeFocusTimer()
-                            minimizedTimerID = presentation.timer.id
-                            selectedDestination = .currentWork
-                        }
-                    } else {
-                        viewModel.dismissCompletedFocusTimer()
-                        minimizedTimerID = nil
+                    Task {
+                        await viewModel.completeFocusTimer()
+                        selectedDestination = .currentWork
                     }
                 }
             )
@@ -239,21 +226,6 @@ struct ContentView: View {
             }
 
             Spacer()
-
-            if let timer = viewModel.focusTimer {
-                Button {
-                    minimizedTimerID = nil
-                } label: {
-                    Label(
-                        timer.status == .running ? "집중 타이머 보기" : "완료된 타이머 보기",
-                        systemImage: "timer"
-                    )
-                    .font(.caption.weight(.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(DesignPalette.sidebarActiveText)
-                .help("집중 타이머 화면 열기")
-            }
         }
         .padding(.horizontal, 22)
         .padding(.top, 16)
@@ -511,7 +483,6 @@ struct ContentView: View {
         }
 
         if viewModel.focusTimer?.status == .running {
-            minimizedTimerID = nil
             return
         }
 
@@ -544,7 +515,6 @@ struct ContentView: View {
 
         timerSetupError = nil
         isTimerSetupPresented = false
-        minimizedTimerID = nil
     }
 
     private func open(_ work: WorkSession) {
@@ -821,39 +791,15 @@ private struct FocusTimerView: View {
     let timer: FocusTimerSession
     let remainingText: String
     let progress: Double
-    let minimize: () -> Void
     let primaryAction: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button(action: minimize) {
-                        Label("최소화", systemImage: "arrow.down.right.and.arrow.up.left")
-                            .font(.callout.weight(.medium))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 9)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.72))
-                    .background(
-                        Color.white.opacity(0.06),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    }
-                    .help("대화 화면으로 돌아가기")
-                }
-                .padding(.top, 22)
-                .padding(.horizontal, 22)
-
-                Spacer(minLength: 24)
+                Spacer(minLength: 76)
 
                 VStack(spacing: 26) {
                     VStack(spacing: 10) {
-                        Text(timer.status == .running ? "집중 모드 · \(timer.taskTitle)" : "집중 완료 · \(timer.taskTitle)")
+                        Text("집중 모드 · \(timer.taskTitle)")
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.52))
                             .lineLimit(1)
@@ -890,16 +836,13 @@ private struct FocusTimerView: View {
                                 "\(Int(progress * 100))퍼센트"
                             )
 
-                        Text(timer.status == .running ? "집중 중" : "완료됨")
+                        Text("집중 중")
                             .font(.headline.weight(.semibold))
                             .foregroundStyle(.white.opacity(0.82))
                     }
                     .frame(maxWidth: 500)
 
-                    Button(
-                        timer.status == .running ? "완료" : "대화로 돌아가기",
-                        action: primaryAction
-                    )
+                    Button("완료", action: primaryAction)
                     .buttonStyle(.plain)
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(DesignPalette.focusBackground)

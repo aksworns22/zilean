@@ -360,12 +360,6 @@ final class ConversationViewModel: ObservableObject {
         await requestRetrospectiveIfPossible()
     }
 
-    func dismissCompletedFocusTimer() {
-        guard focusTimer?.status == .completed else { return }
-        focusTimer = nil
-        refreshFocusTimerPresentation()
-    }
-
     func refreshFocusTimerPresentation(at date: Date = .now) {
         focusTimerPresentation = FocusTimerPresentation.make(timer: focusTimer, now: date)
 
