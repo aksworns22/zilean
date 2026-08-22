@@ -57,7 +57,7 @@ nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
     }
 
     func remaining(at now: Date) -> TimeInterval {
-        max(0, targetEndAt.timeIntervalSince(now))
+        max(0, targetEndAt.timeIntervalSince(completedAt ?? now))
     }
 
     func remainingText(at now: Date) -> String {

@@ -194,7 +194,7 @@ struct zileanTests {
         )
     }
 
-    @Test func completedFocusTimerFreezesElapsedTime() {
+    @Test func completedFocusTimerFreezesElapsedAndRemainingTime() {
         let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
         let completedAt = startedAt.addingTimeInterval(75)
         let timer = FocusTimerSession(
@@ -207,6 +207,8 @@ struct zileanTests {
         )
 
         #expect(timer.elapsed(at: completedAt.addingTimeInterval(300)) == 75)
+        #expect(timer.remaining(at: completedAt.addingTimeInterval(300)) == 45)
+        #expect(timer.remainingText(at: completedAt.addingTimeInterval(300)) == "00:00:45")
         #expect(timer.progress(at: completedAt.addingTimeInterval(300)) == 0.625)
     }
 

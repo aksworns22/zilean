@@ -826,6 +826,8 @@ private struct FocusTimerView: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
+            let remainingText = timer.remainingText(at: context.date)
+
             VStack(spacing: 0) {
                 HStack {
                     Spacer()
@@ -859,14 +861,14 @@ private struct FocusTimerView: View {
                             .foregroundStyle(.white.opacity(0.52))
                             .lineLimit(1)
 
-                        Text(FocusTimerTimeFormatter.string(from: timer.elapsed(at: context.date)))
+                        Text(remainingText)
                             .font(.system(size: 92, weight: .medium, design: .monospaced))
                             .monospacedDigit()
                             .foregroundStyle(.white.opacity(0.94))
                             .lineLimit(1)
                             .minimumScaleFactor(0.55)
                             .accessibilityLabel(
-                                "경과 시간 \(FocusTimerTimeFormatter.string(from: timer.elapsed(at: context.date)))"
+                                "남은 시간 \(remainingText)"
                             )
 
                         HStack(spacing: 10) {
