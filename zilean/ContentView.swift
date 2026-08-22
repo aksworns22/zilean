@@ -361,7 +361,7 @@ struct ContentView: View {
 
     private var composer: some View {
         VStack(spacing: 10) {
-            if let detail = viewModel.phase.detail {
+            if let detail = viewModel.phase.detail ?? viewModel.retrospectiveError {
                 ErrorBanner(
                     message: detail,
                     showsRetry: viewModel.canRetryConnection || viewModel.canRetryRetrospective,
