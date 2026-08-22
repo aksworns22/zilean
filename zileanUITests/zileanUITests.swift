@@ -28,7 +28,7 @@ final class zileanUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.buttons["새 작업"].waitForExistence(timeout: 15))
-        XCTAssertTrue(app.buttons["돌아보기"].exists)
+        XCTAssertTrue(app.buttons["피드백받기"].exists)
         XCTAssertTrue(app.staticTexts["오늘은 어떤 작업을 시작할까요?"].exists)
         XCTAssertTrue(app.buttons["타이머 직접 설정"].exists)
         XCTAssertTrue(app.buttons["메시지 보내기"].exists)
@@ -45,8 +45,12 @@ final class zileanUITests: XCTestCase {
         XCTAssertTrue(app.buttons["집중 타이머 시작"].exists)
         app.buttons["타이머 설정 닫기"].firstMatch.click()
 
-        app.buttons["돌아보기"].click()
-        XCTAssertTrue(app.staticTexts["아직 돌아볼 작업이 없어요"].exists)
+        app.buttons["피드백받기"].click()
+        XCTAssertTrue(app.staticTexts["피드백받기"].exists)
+        XCTAssertTrue(app.staticTexts["이 기간에 완료한 집중 작업이 없어요."].exists)
+        XCTAssertTrue(app.staticTexts["피드백을 위한 기록을 쌓아보세요"].exists)
+        XCTAssertTrue(app.buttons["오늘 기록 보기"].exists)
+        XCTAssertTrue(app.buttons["이번 주 기록 보기"].exists)
     }
 
     @MainActor

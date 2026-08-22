@@ -62,12 +62,12 @@ struct ContentView: View {
                 .disabled(viewModel.phase.isBusy)
 
                 navigationButton(
-                    title: "돌아보기",
-                    systemImage: "clock.arrow.circlepath",
-                    destination: .review
+                    title: "피드백받기",
+                    systemImage: "sparkles",
+                    destination: .feedback
                 ) {
                     closeTimerSetup()
-                    selectedDestination = .review
+                    selectedDestination = .feedback
                 }
             }
             .padding(.horizontal, 12)
@@ -196,16 +196,15 @@ struct ContentView: View {
         VStack(spacing: 0) {
             workspaceStatus
 
-            Group {
-                switch selectedDestination {
-                case .review:
-                    reviewPlaceholder
-                case .newWork, .currentWork:
+            switch selectedDestination {
+            case .feedback:
+                feedbackWorkspace
+            case .newWork, .currentWork:
+                VStack(spacing: 0) {
                     conversation
+                    composer
                 }
             }
-
-            composer
         }
         .background(Color(nsColor: .textBackgroundColor))
     }
@@ -233,59 +232,21 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var reviewPlaceholder: some View {
-        if viewModel.recentWorkSessions.isEmpty {
-            VStack(spacing: 8) {
-                Text("아직 돌아볼 작업이 없어요")
-                    .font(.title2.weight(.semibold))
-                Text("집중 타이머를 시작한 작업을 이곳에서 다시 열 수 있어요.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
+    private var feedbackWorkspace: some View {
+        VStack(spacing: 0) {
             TimelineView(.periodic(from: .now, by: 60)) { context in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("돌아보기")
-                                .font(.title2.weight(.semibold))
-                            Text("집중 타이머를 시작한 작업을 다시 열 수 있어요.")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.bottom, 6)
-
-                        ForEach(viewModel.recentWorkSessions) { work in
-                            Button {
-                                open(work)
-                            } label: {
-                                WorkSessionSummary(
-                                    work: work,
-                                    now: context.date,
-                                    showsDetails: true
-                                )
-                                .padding(16)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(viewModel.phase.isBusy)
-                            .background(
-                                Color(nsColor: .controlBackgroundColor),
-                                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            )
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: 680, alignment: .leading)
-                    .padding(.horizontal, 32)
-                    .padding(.vertical, 24)
-                    .frame(maxWidth: .infinity)
-                }
+                FeedbackInsightsView(
+                    insights: viewModel.feedbackInsights(at: context.date),
+                    selectedPeriod: viewModel.feedbackPeriod,
+                    selectPeriod: viewModel.selectFeedbackPeriod
+                )
             }
+
+            Divider()
+                .padding(.top, 8)
+
+            feedbackConversation
+            feedbackComposer
         }
     }
 
@@ -321,6 +282,108 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var feedbackConversation: some View {
+        if viewModel.feedbackInsights().items.isEmpty {
+            VStack(spacing: 8) {
+                Text("피드백을 위한 기록을 쌓아보세요")
+                    .font(.headline.weight(.semibold))
+                Text("완료한 집중 작업이 생기면 이 기간의 기록을 바탕으로 질리언에게 피드백을 받을 수 있어요.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 40)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if viewModel.feedbackMessages.isEmpty {
+            VStack(spacing: 8) {
+                Text("이번 기록에서 무엇을 개선하면 좋을까요?")
+                    .font(.headline.weight(.semibold))
+                Text("예상 시간의 차이, 집중 패턴, 다음 주 계획을 질리언에게 물어보세요.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 40)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 14) {
+                        ForEach(viewModel.feedbackMessages) { message in
+                            MessageRow(message: message)
+                                .id(message.id)
+                        }
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.vertical, 20)
+                }
+                .onChange(of: viewModel.feedbackMessages) { _, messages in
+                    guard let lastID = messages.last?.id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                }
+            }
+        }
+    }
+
+    private var feedbackComposer: some View {
+        VStack(spacing: 8) {
+            if let error = viewModel.phase.detail {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 680, alignment: .leading)
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(DesignPalette.sidebarActiveText)
+                    .frame(width: 30, height: 30)
+
+                TextField(
+                    "이번 기록에 대해 무엇이 궁금한가요?",
+                    text: $viewModel.feedbackDraft,
+                    axis: .vertical
+                )
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+                .padding(.vertical, 7)
+                .disabled(!viewModel.canSendFeedback && viewModel.feedbackDraft.isEmpty)
+                .onSubmit(sendFeedbackMessage)
+
+                Button(action: sendFeedbackMessage) {
+                    Image(systemName: "arrow.up")
+                        .font(.body.weight(.bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(DesignPalette.userBubble, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!viewModel.canSendFeedback)
+                .opacity(viewModel.canSendFeedback ? 1 : 0.35)
+                .accessibilityLabel("피드백 요청 보내기")
+                .help("피드백 요청 보내기")
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(
+                Color(nsColor: .controlBackgroundColor),
+                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.primary.opacity(0.1), lineWidth: 1)
+            }
+        }
+        .frame(maxWidth: 680)
+        .padding(.horizontal, 32)
+        .padding(.top, 10)
+        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity)
     }
 
     private var emptyStateDescription: String {
@@ -385,7 +448,7 @@ struct ContentView: View {
                         ? DesignPalette.timerSetupButtonForeground
                         : Color.secondary
                 )
-                .disabled(viewModel.phase.isBusy || selectedDestination == .review)
+                .disabled(viewModel.phase.isBusy || selectedDestination == .feedback)
                 .accessibilityLabel(
                     isTimerSetupPresented ? "타이머 설정 닫기" : "타이머 직접 설정"
                 )
@@ -396,7 +459,7 @@ struct ContentView: View {
                     .lineLimit(1...6)
                     .padding(.vertical, 7)
                     .disabled(
-                        selectedDestination == .review
+                        selectedDestination == .feedback
                             || !viewModel.hasConversation
                             || viewModel.phase.isBusy
                     )
@@ -474,8 +537,13 @@ struct ContentView: View {
         Task { await viewModel.sendMessage() }
     }
 
+    private func sendFeedbackMessage() {
+        guard viewModel.canSendFeedback else { return }
+        Task { await viewModel.sendFeedbackMessage() }
+    }
+
     private func toggleTimerSetup() {
-        guard !viewModel.phase.isBusy, selectedDestination != .review else { return }
+        guard !viewModel.phase.isBusy, selectedDestination != .feedback else { return }
 
         if isTimerSetupPresented {
             closeTimerSetup()
@@ -529,14 +597,14 @@ struct ContentView: View {
     }
 
     private var canSendMessage: Bool {
-        selectedDestination != .review && viewModel.canSend
+        selectedDestination != .feedback && viewModel.canSend
     }
 
 }
 
 private enum SidebarDestination {
     case newWork
-    case review
+    case feedback
     case currentWork
 }
 
@@ -954,6 +1022,185 @@ private struct MessageRow: View {
     }
 }
 
+private struct FeedbackInsightsView: View {
+    let insights: FeedbackInsights
+    let selectedPeriod: FeedbackPeriod
+    let selectPeriod: (FeedbackPeriod) -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("피드백받기")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundStyle(DesignPalette.sidebarActiveText)
+                        Text(insights.periodDescription)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(DesignPalette.timerSetupMutedText)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        ForEach(FeedbackPeriod.allCases) { period in
+                            Button {
+                                selectPeriod(period)
+                            } label: {
+                                Text(period.title)
+                                    .font(.callout.weight(.semibold))
+                                    .foregroundStyle(
+                                        selectedPeriod == period
+                                            ? DesignPalette.sidebarActiveText
+                                            : DesignPalette.timerSetupMutedText
+                                    )
+                                    .padding(.horizontal, 18)
+                                    .frame(height: 38)
+                                    .background(
+                                        selectedPeriod == period ? Color.white : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    )
+                                    .shadow(
+                                        color: selectedPeriod == period ? .black.opacity(0.07) : .clear,
+                                        radius: 3,
+                                        y: 1
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(selectedPeriod == period ? .isSelected : [])
+                            .accessibilityLabel("\(period.title) 기록 보기")
+                        }
+                    }
+                    .padding(4)
+                    .background(
+                        DesignPalette.timerSetupControlBackground,
+                        in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    )
+                }
+
+                HStack(spacing: 14) {
+                    FeedbackMetricCard(
+                        title: "완료한 작업",
+                        value: "\(insights.completedWorkCount)개",
+                        accent: DesignPalette.sidebarActiveText
+                    )
+                    FeedbackMetricCard(
+                        title: "집중 시간",
+                        value: feedbackDurationDescription(insights.totalFocusDuration),
+                        accent: DesignPalette.sidebarActiveText
+                    )
+                    FeedbackMetricCard(
+                        title: "예상 정확도",
+                        value: insights.estimateAccuracy.map { "\($0)%" } ?? "–",
+                        accent: DesignPalette.feedbackAccent
+                    )
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("작업 기록")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(DesignPalette.timerSetupMutedText)
+
+                    if insights.items.isEmpty {
+                        Text("이 기간에 완료한 집중 작업이 없어요.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .padding(.vertical, 16)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .background(
+                                Color(nsColor: .controlBackgroundColor),
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            )
+                    } else {
+                        ForEach(insights.items) { item in
+                            FeedbackWorkRow(item: item)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: 1_050, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 18)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxHeight: 410)
+    }
+}
+
+private struct FeedbackMetricCard: View {
+    let title: String
+    let value: String
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(DesignPalette.timerSetupMutedText)
+            Text(value)
+                .font(.system(size: 31, weight: .bold, design: .rounded))
+                .foregroundStyle(accent)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+        .padding(.horizontal, 22)
+        .padding(.vertical, 16)
+        .background(
+            DesignPalette.timerSetupControlBackground,
+            in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke(Color.primary.opacity(0.07), lineWidth: 1)
+        }
+    }
+}
+
+private struct FeedbackWorkRow: View {
+    let item: FeedbackWorkItem
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Text(item.work.title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(DesignPalette.sidebarActiveText)
+                .lineLimit(1)
+
+            Spacer(minLength: 20)
+
+            HStack(spacing: 14) {
+                labelledDuration("예상", value: feedbackDurationDescription(item.expectedDuration))
+                labelledDuration("실제", value: feedbackDurationDescription(item.actualDuration))
+                Text(signedDurationDescription(item.difference))
+                    .font(.callout.weight(.bold))
+                    .foregroundStyle(item.difference > 0 ? DesignPalette.feedbackAccent : DesignPalette.timerSetupMutedText)
+                    .frame(minWidth: 48, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 22)
+        .frame(minHeight: 58)
+        .background(
+            Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func labelledDuration(_ label: String, value: String) -> some View {
+        HStack(spacing: 5) {
+            Text(label)
+                .foregroundStyle(DesignPalette.timerSetupMutedText)
+            Text(value)
+                .foregroundStyle(DesignPalette.sidebarActiveText)
+                .monospacedDigit()
+        }
+        .font(.callout.weight(.medium))
+    }
+}
+
 private enum DesignPalette {
     static let focusBackground = Color(
         red: 10.0 / 255.0,
@@ -1020,6 +1267,11 @@ private enum DesignPalette {
         red: 14.0 / 255.0,
         green: 46.0 / 255.0,
         blue: 52.0 / 255.0
+    )
+    static let feedbackAccent = Color(
+        red: 202.0 / 255.0,
+        green: 77.0 / 255.0,
+        blue: 30.0 / 255.0
     )
 }
 

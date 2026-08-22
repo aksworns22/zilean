@@ -348,6 +348,77 @@ struct zileanTests {
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
     }
 
+    @Test func summarizesOnlyCompletedWorkInTheSelectedPeriod() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        calendar.firstWeekday = 2
+        let referenceDate = Date(timeIntervalSince1970: 1_787_097_600) // 2026-08-22 12:00 UTC
+
+        func work(
+            title: String,
+            plannedMinutes: Int,
+            completedAt: Date,
+            elapsedMinutes: Int
+        ) -> WorkSession {
+            let id = UUID()
+            let timer = FocusTimerSession(
+                workID: id,
+                taskTitle: title,
+                durationMinutes: plannedMinutes,
+                startedAt: completedAt.addingTimeInterval(TimeInterval(-elapsedMinutes * 60)),
+                status: .completed,
+                completedAt: completedAt
+            )
+            return WorkSession(
+                id: id,
+                threadID: id.uuidString,
+                directory: URL(fileURLWithPath: "/tmp/\(id.uuidString)"),
+                title: title,
+                focusTimer: timer
+            )
+        }
+
+        let included = work(
+            title: "API 연동 문서화",
+            plannedMinutes: 60,
+            completedAt: referenceDate.addingTimeInterval(-86_400),
+            elapsedMinutes: 90
+        )
+        let exact = work(
+            title: "DART 공시 작업",
+            plannedMinutes: 60,
+            completedAt: referenceDate.addingTimeInterval(-172_800),
+            elapsedMinutes: 60
+        )
+        let outsidePeriod = work(
+            title: "지난 주 작업",
+            plannedMinutes: 30,
+            completedAt: referenceDate.addingTimeInterval(-604_800),
+            elapsedMinutes: 30
+        )
+
+        let insights = FeedbackInsights(
+            workSessions: [included, exact, outsidePeriod],
+            period: .thisWeek,
+            now: referenceDate,
+            calendar: calendar
+        )
+
+        #expect(insights.completedWorkCount == 2)
+        #expect(insights.totalFocusDuration == 9_000)
+        #expect(insights.estimateAccuracy == 75)
+        #expect(insights.items.map(\.work.title) == ["API 연동 문서화", "DART 공시 작업"])
+    }
+
+    @Test func feedbackInsightsShowsAnEmptyStateForPeriodsWithoutCompletedWork() {
+        let insights = FeedbackInsights(workSessions: [], period: .today)
+
+        #expect(insights.completedWorkCount == 0)
+        #expect(insights.totalFocusDuration == 0)
+        #expect(insights.estimateAccuracy == nil)
+        #expect(insights.contextForFeedback.contains("완료된 집중 작업 기록이 없습니다"))
+    }
+
     @Test @MainActor func requestsRetrospectiveWhenFocusTimerCompletes() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -667,6 +738,46 @@ struct zileanTests {
         client.onEvent?(.agentMessageDelta(itemID: "item-2", text: "두 번째"))
 
         #expect(viewModel.messages.map(\.text) == ["첫 번째", "두 번째"])
+    }
+
+    @Test @MainActor func sendsFeedbackWithSelectedPeriodDataToItsOwnConversation() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let startedAt = Date.now.addingTimeInterval(-1_200)
+        _ = viewModel.startFocusTimer(
+            taskTitle: "피드백 대상 작업",
+            durationMinutes: 25,
+            at: startedAt
+        )
+        await viewModel.completeFocusTimer(at: Date.now)
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        viewModel.feedbackDraft = "다음에는 시간을 어떻게 잡으면 좋을까?"
+        await viewModel.sendFeedbackMessage()
+
+        let prompt = try #require(client.startTurnTexts.last)
+        #expect(prompt.contains("[Zilean 내부 이벤트: 피드백받기]"))
+        #expect(prompt.contains("피드백 대상 작업"))
+        #expect(prompt.contains("사용자 질문: 다음에는 시간을 어떻게 잡으면 좋을까?"))
+        #expect(viewModel.feedbackMessages.map(\.text) == ["다음에는 시간을 어떻게 잡으면 좋을까?"])
+
+        client.onEvent?(.agentMessageDelta(itemID: "feedback-1", text: "기록상 "))
+        client.onEvent?(.agentMessageDelta(itemID: "feedback-1", text: "다음에는 여유를 두세요."))
+
+        #expect(viewModel.feedbackMessages.map(\.text) == [
+            "다음에는 시간을 어떻게 잡으면 좋을까?",
+            "기록상 다음에는 여유를 두세요.",
+        ])
     }
 
     @Test @MainActor func preservesMessagesWhenSwitchingWorkSessions() async {

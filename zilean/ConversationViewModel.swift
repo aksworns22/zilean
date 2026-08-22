@@ -95,6 +95,9 @@ final class ConversationViewModel: ObservableObject {
     @Published private(set) var focusTimerPresentation: FocusTimerPresentation?
     @Published private(set) var retrospectiveStatus: RetrospectiveStatus = .idle
     @Published var draft = ""
+    @Published private(set) var feedbackMessages: [ConversationMessage] = []
+    @Published var feedbackDraft = ""
+    @Published private(set) var feedbackPeriod: FeedbackPeriod = .thisWeek
 
     private let client: CodexAppServerServing
     private let harnessPreparer: CodexHarnessPreparing
@@ -107,10 +110,13 @@ final class ConversationViewModel: ObservableObject {
     private var pendingRetrospectiveTimer: FocusTimerSession?
     private var pendingRetrospectiveAnswer: String?
     private var activeTurn: ActiveTurn?
+    private var feedbackThreadID: String?
+    private var activeFeedbackAgentItemID: String?
 
     private enum ActiveTurn {
         case user
         case retrospective(timerID: UUID)
+        case feedback
     }
 
     var activeWork: WorkSession? {
@@ -146,6 +152,13 @@ final class ConversationViewModel: ObservableObject {
             && !phase.isBusy
     }
 
+    var canSendFeedback: Bool {
+        !feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !feedbackInsights().items.isEmpty
+            && client.isConnected
+            && !phase.isBusy
+    }
+
     var canRetryConnection: Bool {
         !client.isConnected && !phase.isBusy
     }
@@ -169,6 +182,10 @@ final class ConversationViewModel: ObservableObject {
         default:
             nil
         }
+    }
+
+    func feedbackInsights(at now: Date = .now) -> FeedbackInsights {
+        FeedbackInsights(workSessions: workSessions, period: feedbackPeriod, now: now)
     }
 
     convenience init() {
@@ -300,6 +317,50 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
+    func selectFeedbackPeriod(_ period: FeedbackPeriod) {
+        guard feedbackPeriod != period else { return }
+        feedbackPeriod = period
+        feedbackDraft = ""
+        feedbackMessages = []
+        feedbackThreadID = nil
+        activeFeedbackAgentItemID = nil
+    }
+
+    func sendFeedbackMessage() async {
+        let question = feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let insights = feedbackInsights()
+        guard !question.isEmpty,
+              !phase.isBusy,
+              client.isConnected,
+              let sourceWork = insights.items.first?.work
+        else { return }
+
+        feedbackDraft = ""
+        feedbackMessages.append(ConversationMessage(role: .user, text: question))
+        activeFeedbackAgentItemID = nil
+        phase = .responding
+        activeTurn = .feedback
+
+        do {
+            let threadID: String
+            if let feedbackThreadID {
+                threadID = feedbackThreadID
+            } else {
+                try harnessPreparer.prepare(in: sourceWork.directory)
+                let newThreadID = try await client.startThread(in: sourceWork.directory)
+                feedbackThreadID = newThreadID
+                threadID = newThreadID
+            }
+            _ = try await client.startTurn(
+                threadID: threadID,
+                text: feedbackPrompt(insights: insights, question: question)
+            )
+        } catch {
+            activeTurn = nil
+            phase = .failed(error.localizedDescription)
+        }
+    }
+
     func selectWork(id: UUID) {
         guard !phase.isBusy, let session = workSessions.first(where: { $0.id == id }) else { return }
 
@@ -402,7 +463,11 @@ final class ConversationViewModel: ObservableObject {
     func handle(_ event: AppServerEvent) {
         switch event {
         case let .agentMessageDelta(itemID, text):
-            mergeAgentDelta(itemID: itemID, text: text)
+            if case .feedback = activeTurn {
+                mergeFeedbackAgentDelta(itemID: itemID, text: text)
+            } else {
+                mergeAgentDelta(itemID: itemID, text: text)
+            }
 
         case let .turnCompleted(status, errorMessage):
             let completedTurn = activeTurn
@@ -437,6 +502,8 @@ final class ConversationViewModel: ObservableObject {
                         "기존 대화 응답이 끝나지 않아 회고를 시작하지 못했습니다. 다시 시도해 주세요."
                     )
                 }
+            case .feedback:
+                break
             case .none:
                 break
             }
@@ -467,6 +534,19 @@ final class ConversationViewModel: ObservableObject {
             activeAgentItemID = itemID
         }
         workSessions[activeWorkIndex].updatedAt = .now
+    }
+
+    private func mergeFeedbackAgentDelta(itemID: String, text: String) {
+        guard !text.isEmpty else { return }
+
+        if activeFeedbackAgentItemID == itemID,
+           let lastIndex = feedbackMessages.indices.last,
+           feedbackMessages[lastIndex].role == .agent {
+            feedbackMessages[lastIndex].text.append(text)
+        } else {
+            feedbackMessages.append(ConversationMessage(role: .agent, text: text))
+            activeFeedbackAgentItemID = itemID
+        }
     }
 
     private func handleTimerCommand(
@@ -608,6 +688,17 @@ final class ConversationViewModel: ObservableObject {
         - 완료 시각: \(completedAtText)
 
         이 이벤트를 기술적인 형식으로 설명하지 말고, 기존 작업 대화의 맥락을 이어서 한국어로 짧고 부담 없는 회고와 다음 행동을 한 번 유도해라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
+        """
+    }
+
+    private func feedbackPrompt(insights: FeedbackInsights, question: String) -> String {
+        """
+        [Zilean 내부 이벤트: 피드백받기]
+        아래는 사용자가 선택한 기간의 실제 완료 작업 기록이다. 이 데이터만을 근거로 패턴과 개선 가능한 다음 행동을 한국어로 친절하고 간결하게 안내해라. 기록에 없는 사실을 추측하지 말고, 사용자의 질문에 직접 답해라.
+
+        \(insights.contextForFeedback)
+
+        사용자 질문: \(question)
         """
     }
 
