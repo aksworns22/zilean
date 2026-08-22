@@ -181,15 +181,18 @@ struct ContentView: View {
 
     @ViewBuilder
     private var workspace: some View {
-        if let timer = viewModel.focusTimer, minimizedTimerID != timer.id {
+        if let presentation = viewModel.focusTimerPresentation,
+           minimizedTimerID != presentation.timer.id {
             FocusTimerView(
-                timer: timer,
-                minimize: { minimizedTimerID = timer.id },
+                timer: presentation.timer,
+                remainingText: presentation.remainingText,
+                progress: presentation.progress,
+                minimize: { minimizedTimerID = presentation.timer.id },
                 primaryAction: {
-                    if timer.status == .running {
+                    if presentation.timer.status == .running {
                         Task {
                             await viewModel.completeFocusTimer()
-                            minimizedTimerID = timer.id
+                            minimizedTimerID = presentation.timer.id
                             selectedDestination = .currentWork
                         }
                     } else {
@@ -821,14 +824,13 @@ private struct DirectTimerSetupCard: View {
 
 private struct FocusTimerView: View {
     let timer: FocusTimerSession
+    let remainingText: String
+    let progress: Double
     let minimize: () -> Void
     let primaryAction: () -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let remainingText = timer.remainingText(at: context.date)
-
-            VStack(spacing: 0) {
+        VStack(spacing: 0) {
                 HStack {
                     Spacer()
                     Button(action: minimize) {
@@ -885,12 +887,12 @@ private struct FocusTimerView: View {
                     }
 
                     VStack(spacing: 13) {
-                        ProgressView(value: timer.progress(at: context.date))
+                        ProgressView(value: progress)
                             .progressViewStyle(.linear)
                             .tint(.white.opacity(0.72))
                             .accessibilityLabel("집중 시간 진행률")
                             .accessibilityValue(
-                                "\(Int(timer.progress(at: context.date) * 100))퍼센트"
+                                "\(Int(progress * 100))퍼센트"
                             )
 
                         Text(timer.status == .running ? "집중 중" : "완료됨")
@@ -916,10 +918,9 @@ private struct FocusTimerView: View {
                 .padding(.horizontal, 44)
 
                 Spacer(minLength: 76)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(DesignPalette.focusBackground)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(DesignPalette.focusBackground)
     }
 }
 
