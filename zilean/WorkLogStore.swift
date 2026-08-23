@@ -32,8 +32,8 @@ struct WorkLogStore {
     }
 
     func save(_ entry: WorkLogEntry, in workDirectory: URL) throws -> URL {
-        let directory = workDirectory
-            .appendingPathComponent("work-records", isDirectory: true)
+        let recordsDirectory = workRecordsDirectory(in: workDirectory)
+        let directory = recordsDirectory
             .appendingPathComponent(dateDirectoryName(for: entry.completedAt), isDirectory: true)
         try fileManager.createDirectory(
             at: directory,
@@ -46,7 +46,13 @@ struct WorkLogStore {
             filename: safeFilename(from: entry.taskTitle)
         )
         try Data(markdown(for: entry).utf8).write(to: destination, options: .atomic)
+        try updateIndex(for: entry, at: destination, in: recordsDirectory)
+        try appendLog(for: entry, at: destination, in: recordsDirectory)
         return destination
+    }
+
+    private func workRecordsDirectory(in workDirectory: URL) -> URL {
+        workDirectory.appendingPathComponent("work-records", isDirectory: true)
     }
 
     private func dateDirectoryName(for date: Date) -> String {
@@ -127,6 +133,76 @@ struct WorkLogStore {
 
         \(conversationMarkdown(for: meaningfulMessages))
         """
+    }
+
+    private func updateIndex(for entry: WorkLogEntry, at recordURL: URL, in recordsDirectory: URL) throws {
+        let indexURL = recordsDirectory.appendingPathComponent("index.md", isDirectory: false)
+        let existing = try existingContents(of: indexURL)
+        let relativePath = relativePath(for: recordURL, from: recordsDirectory)
+        let line = "- [\(markdownLinkText(entry.taskTitle))](<\(relativePath)>) — 완료 \(formattedTimestamp(entry.completedAt)) · 계획 \(plannedDurationDescription(entry.plannedDurationMinutes)) · 실제 \(actualDurationDescription(for: entry)) · 차이 \(durationDifferenceDescription(durationDifference(for: entry)))"
+        let contents = existing ?? """
+        # 작업 기록 인덱스
+
+        계획 시간, 실제 시간, AI와의 작업 회고 대화를 빠르게 찾기 위한 목록입니다.
+
+        ## 기록
+        """
+
+        try write("\(contents.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(line)\n", to: indexURL)
+    }
+
+    private func appendLog(for entry: WorkLogEntry, at recordURL: URL, in recordsDirectory: URL) throws {
+        let logURL = recordsDirectory.appendingPathComponent("log.md", isDirectory: false)
+        let existing = try existingContents(of: logURL)
+        let relativePath = relativePath(for: recordURL, from: recordsDirectory)
+        let entryText = """
+        ## [\(formattedTimestamp(entry.completedAt))] 작업 기록 생성 · \(entry.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines))
+
+        - 기록: [\(markdownLinkText(entry.taskTitle))](<\(relativePath)>)
+        - 계획: \(plannedDurationDescription(entry.plannedDurationMinutes))
+        - 실제: \(actualDurationDescription(for: entry))
+        - 계획 대비 차이: \(durationDifferenceDescription(durationDifference(for: entry)))
+        """
+        let contents = existing ?? """
+        # 작업 기록 로그
+
+        작업 기록을 생성한 시점을 시간순으로 남기는 append-only 이력입니다.
+        """
+
+        try write("\(contents.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(entryText)\n", to: logURL)
+    }
+
+    private func existingContents(of url: URL) throws -> String? {
+        guard fileManager.fileExists(atPath: url.path) else { return nil }
+        return try String(contentsOf: url, encoding: .utf8)
+    }
+
+    private func write(_ contents: String, to url: URL) throws {
+        try Data(contents.utf8).write(to: url, options: .atomic)
+    }
+
+    private func relativePath(for recordURL: URL, from recordsDirectory: URL) -> String {
+        let recordsPath = recordsDirectory.standardizedFileURL.path
+        let recordPath = recordURL.standardizedFileURL.path
+        let prefix = recordsPath.hasSuffix("/") ? recordsPath : "\(recordsPath)/"
+        return String(recordPath.dropFirst(prefix.count))
+    }
+
+    private func actualDurationDescription(for entry: WorkLogEntry) -> String {
+        "\(max(0, Int(entry.completedAt.timeIntervalSince(entry.startedAt))))초"
+    }
+
+    private func durationDifference(for entry: WorkLogEntry) -> Int? {
+        let elapsedSeconds = max(0, Int(entry.completedAt.timeIntervalSince(entry.startedAt)))
+        return entry.plannedDurationMinutes.map { elapsedSeconds - max(0, $0 * 60) }
+    }
+
+    private func markdownLinkText(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
     }
 
     private func plannedDurationDescription(_ minutes: Int?) -> String {

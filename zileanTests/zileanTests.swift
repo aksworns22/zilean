@@ -306,6 +306,15 @@ struct zileanTests {
         let firstURL = try store.save(entry, in: directory)
         let secondURL = try store.save(entry, in: directory)
         let markdown = try String(contentsOf: firstURL, encoding: .utf8)
+        let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
+        let index = try String(
+            contentsOf: recordsDirectory.appendingPathComponent("index.md"),
+            encoding: .utf8
+        )
+        let log = try String(
+            contentsOf: recordsDirectory.appendingPathComponent("log.md"),
+            encoding: .utf8
+        )
 
         #expect(firstURL.path.hasSuffix("work-records/2026-08-22/DART-공시-초안.md"))
         #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
@@ -322,6 +331,14 @@ struct zileanTests {
         #expect(markdown.contains("DART 공시 초안을 25분 안에 정리할게요."))
         #expect(markdown.contains("### 2. 어시스턴트"))
         #expect(!markdown.contains("## 회고와 후속 작업"))
+        #expect(index.contains("# 작업 기록 인덱스"))
+        #expect(index.contains("DART-공시-초안.md"))
+        #expect(index.contains("DART-공시-초안-2.md"))
+        #expect(index.contains("계획 25분"))
+        #expect(log.contains("# 작업 기록 로그"))
+        #expect(log.contains("작업 기록 생성"))
+        #expect(log.contains("DART-공시-초안.md"))
+        #expect(log.contains("DART-공시-초안-2.md"))
     }
 
     @Test func recordsMissingConversationContextExplicitly() throws {
@@ -619,7 +636,7 @@ struct zileanTests {
             try FileManager.default.contentsOfDirectory(
                 at: recordsDirectory,
                 includingPropertiesForKeys: nil
-            ).first
+            ).first(where: \.hasDirectoryPath)
         )
         let recordURL = try #require(
             try FileManager.default.contentsOfDirectory(
@@ -628,6 +645,14 @@ struct zileanTests {
             ).first
         )
         let markdown = try String(contentsOf: recordURL, encoding: .utf8)
+        let index = try String(
+            contentsOf: recordsDirectory.appendingPathComponent("index.md"),
+            encoding: .utf8
+        )
+        let log = try String(
+            contentsOf: recordsDirectory.appendingPathComponent("log.md"),
+            encoding: .utf8
+        )
 
         #expect(viewModel.retrospectiveStatus == .answered)
         #expect(markdown.contains("# 작업 기록 저장"))
@@ -641,6 +666,9 @@ struct zileanTests {
         #expect(markdown.contains("### 2. 어시스턴트"))
         #expect(markdown.contains("계획 대비 실제 시간이 짧았습니다."))
         #expect(!markdown.contains("## 회고와 후속 작업"))
+        #expect(index.contains("작업 기록 저장"))
+        #expect(index.contains("계획 25분"))
+        #expect(log.contains("작업 기록 생성 · 작업 기록 저장"))
     }
 
     @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
