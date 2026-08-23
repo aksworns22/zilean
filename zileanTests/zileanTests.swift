@@ -299,7 +299,18 @@ struct zileanTests {
                     text: "핵심 숫자부터 확인해 보세요.",
                     createdAt: completedAt.addingTimeInterval(-80)
                 ),
-            ]
+            ],
+            retrospectiveFeedback: """
+            ## 작업 완료 시간 예측의 정확성
+            - 판단: 예상 시간보다 짧게 끝났습니다.
+            - 근거: 핵심 숫자를 먼저 확인했습니다.
+            - 다음 보정: 검토 시간을 따로 계획하세요.
+
+            ## 작업 집중도의 밀도
+            - 판단: 핵심 작업에 지속적으로 집중했습니다.
+            - 근거: 대화에 작업 전환이 없습니다.
+            - 다음 행동: 같은 순서를 유지하세요.
+            """
         )
         let store = WorkLogStore(calendar: calendar)
 
@@ -307,16 +318,26 @@ struct zileanTests {
         let secondURL = try store.save(entry, in: directory)
         let markdown = try String(contentsOf: firstURL, encoding: .utf8)
         let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
+        let wikiDirectory = recordsDirectory.appendingPathComponent("wiki", isDirectory: true)
         let index = try String(
-            contentsOf: recordsDirectory.appendingPathComponent("index.md"),
+            contentsOf: wikiDirectory.appendingPathComponent("index.md"),
             encoding: .utf8
         )
         let log = try String(
-            contentsOf: recordsDirectory.appendingPathComponent("log.md"),
+            contentsOf: wikiDirectory.appendingPathComponent("log.md"),
+            encoding: .utf8
+        )
+        let taskPage = try String(
+            contentsOf: wikiDirectory
+                .appendingPathComponent("tasks/2026-08-22/DART-공시-초안.md"),
+            encoding: .utf8
+        )
+        let schema = try String(
+            contentsOf: wikiDirectory.appendingPathComponent("SCHEMA.md"),
             encoding: .utf8
         )
 
-        #expect(firstURL.path.hasSuffix("work-records/2026-08-22/DART-공시-초안.md"))
+        #expect(firstURL.path.hasSuffix("work-records/raw/2026-08-22/DART-공시-초안.md"))
         #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
         #expect(markdown.contains("task_title: \"DART / 공시: 초안\""))
         #expect(markdown.contains("planned_focus_minutes: 25"))
@@ -324,21 +345,27 @@ struct zileanTests {
         #expect(markdown.contains("duration_difference_seconds: -1425"))
         #expect(markdown.contains("conversation_context_status: recorded"))
         #expect(markdown.contains("conversation_context_message_count: 2"))
-        #expect(markdown.contains("## 시간 기록"))
+        #expect(markdown.contains("## 타이머 기록"))
         #expect(markdown.contains("계획한 집중 시간: 25분"))
-        #expect(markdown.contains("## AI와의 작업 회고 대화"))
+        #expect(markdown.contains("## AI와의 작업 대화 원문"))
         #expect(markdown.contains("### 1. 사용자"))
         #expect(markdown.contains("DART 공시 초안을 25분 안에 정리할게요."))
         #expect(markdown.contains("### 2. 어시스턴트"))
         #expect(!markdown.contains("## 회고와 후속 작업"))
         #expect(index.contains("# 작업 기록 인덱스"))
-        #expect(index.contains("DART-공시-초안.md"))
-        #expect(index.contains("DART-공시-초안-2.md"))
+        #expect(index.contains("tasks/2026-08-22/DART-공시-초안.md"))
+        #expect(index.contains("tasks/2026-08-22/DART-공시-초안-2.md"))
         #expect(index.contains("계획 25분"))
+        #expect(index.contains("집중도: 핵심 작업에 지속적으로 집중했습니다."))
         #expect(log.contains("# 작업 기록 로그"))
         #expect(log.contains("작업 기록 생성"))
-        #expect(log.contains("DART-공시-초안.md"))
-        #expect(log.contains("DART-공시-초안-2.md"))
+        #expect(log.contains("tasks/2026-08-22/DART-공시-초안.md"))
+        #expect(log.contains("raw/2026-08-22/DART-공시-초안-2.md"))
+        #expect(taskPage.contains("# DART / 공시: 초안 · 2026-08-22"))
+        #expect(taskPage.contains("## 작업 완료 시간 예측의 정확성"))
+        #expect(taskPage.contains("## 작업 집중도의 밀도"))
+        #expect(taskPage.contains("../../../raw/2026-08-22/DART-공시-초안.md"))
+        #expect(schema.contains("변경하지 않는 근거 계층"))
     }
 
     @Test func recordsMissingConversationContextExplicitly() throws {
@@ -627,14 +654,25 @@ struct zileanTests {
         await viewModel.sendMessage()
         client.onEvent?(.agentMessageDelta(
             itemID: "retrospective-feedback",
-            text: "계획 대비 실제 시간이 짧았습니다. 다음에는 검토 시간을 따로 잡아 보세요."
+            text: """
+            ## 작업 완료 시간 예측의 정확성
+            - 판단: 계획 대비 실제 시간이 짧았습니다.
+            - 근거: 핵심 흐름을 빠르게 정리했습니다.
+            - 다음 보정: 다음에는 검토 시간을 따로 잡아 보세요.
+
+            ## 작업 집중도의 밀도
+            - 판단: 핵심 흐름에 집중했습니다.
+            - 근거: 대화에 작업 전환이 없습니다.
+            - 다음 행동: 같은 흐름을 유지하세요.
+            """
         ))
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
         let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
+        let rawDirectory = recordsDirectory.appendingPathComponent("raw", isDirectory: true)
         let dateDirectory = try #require(
             try FileManager.default.contentsOfDirectory(
-                at: recordsDirectory,
+                at: rawDirectory,
                 includingPropertiesForKeys: nil
             ).first(where: \.hasDirectoryPath)
         )
@@ -645,12 +683,13 @@ struct zileanTests {
             ).first
         )
         let markdown = try String(contentsOf: recordURL, encoding: .utf8)
+        let wikiDirectory = recordsDirectory.appendingPathComponent("wiki", isDirectory: true)
         let index = try String(
-            contentsOf: recordsDirectory.appendingPathComponent("index.md"),
+            contentsOf: wikiDirectory.appendingPathComponent("index.md"),
             encoding: .utf8
         )
         let log = try String(
-            contentsOf: recordsDirectory.appendingPathComponent("log.md"),
+            contentsOf: wikiDirectory.appendingPathComponent("log.md"),
             encoding: .utf8
         )
 
@@ -668,6 +707,7 @@ struct zileanTests {
         #expect(!markdown.contains("## 회고와 후속 작업"))
         #expect(index.contains("작업 기록 저장"))
         #expect(index.contains("계획 25분"))
+        #expect(index.contains("집중도: 핵심 흐름에 집중했습니다."))
         #expect(log.contains("작업 기록 생성 · 작업 기록 저장"))
     }
 

@@ -719,7 +719,19 @@ final class ConversationViewModel: ObservableObject {
         - 대화에 드러난 우선순위 변경, 막힘, 산만한 전환, 재작업, 명확한 진척을 근거로 사용한다.
         - 오래 작업한 시간 대신 의미 있게 진척된 집중 시간을 함께 해석한다.
 
-        먼저 사용자가 당시의 계획, 실제 진행, 방해·막힘을 보탤 수 있는 질문을 하나만 해라. 사용자가 답하면 두 관점을 모두 다루는 근거 있는 피드백을 제공해라. 기록에 없는 사실은 추측하지 말고 정보가 부족하다고 밝혀라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
+        먼저 사용자가 당시의 계획, 실제 진행, 방해·막힘을 보탤 수 있는 질문을 하나만 해라. 사용자가 답하면 두 관점을 모두 다루는 근거 있는 피드백을 아래 Markdown 형식으로만 제공해라.
+
+        ## 작업 완료 시간 예측의 정확성
+        - 판단: ...
+        - 근거: ...
+        - 다음 보정: ...
+
+        ## 작업 집중도의 밀도
+        - 판단: ...
+        - 근거: ...
+        - 다음 행동: ...
+
+        기록에 없는 사실은 추측하지 말고 정보가 부족하다고 밝혀라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
         """
     }
 
@@ -795,7 +807,8 @@ final class ConversationViewModel: ObservableObject {
                     plannedDurationMinutes: timer.durationMinutes,
                     startedAt: timer.startedAt,
                     completedAt: completedAt,
-                    conversation: work.messages
+                    conversation: work.messages,
+                    retrospectiveFeedback: work.messages.last(where: { $0.role == .agent })?.text
                 ),
                 in: work.directory
             )
