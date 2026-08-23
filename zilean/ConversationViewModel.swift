@@ -9,11 +9,13 @@ struct ConversationMessage: Identifiable, Equatable {
 
     let id: UUID
     let role: Role
+    let createdAt: Date
     var text: String
 
-    init(id: UUID = UUID(), role: Role, text: String) {
+    init(id: UUID = UUID(), role: Role, text: String, createdAt: Date = .now) {
         self.id = id
         self.role = role
+        self.createdAt = createdAt
         self.text = text
     }
 }
@@ -296,7 +298,6 @@ final class ConversationViewModel: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let activeWorkIndex, !text.isEmpty, !phase.isBusy, client.isConnected else { return }
 
-        handleUserInputDuringRetrospective(text)
         let threadID = workSessions[activeWorkIndex].threadID
 
         draft = ""
@@ -306,6 +307,7 @@ final class ConversationViewModel: ObservableObject {
         }
         workSessions[activeWorkIndex].messages.append(ConversationMessage(role: .user, text: text))
         workSessions[activeWorkIndex].updatedAt = .now
+        handleUserInputDuringRetrospective(text)
         phase = .responding
         activeTurn = .user
 
@@ -732,9 +734,11 @@ final class ConversationViewModel: ObservableObject {
             _ = try workLogStore.save(
                 WorkLogEntry(
                     taskTitle: timer.taskTitle,
+                    plannedDurationMinutes: timer.durationMinutes,
                     startedAt: timer.startedAt,
                     completedAt: completedAt,
-                    retrospective: answer
+                    retrospective: answer,
+                    conversation: work.messages
                 ),
                 in: work.directory
             )

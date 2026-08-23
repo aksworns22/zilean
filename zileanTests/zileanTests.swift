@@ -285,9 +285,22 @@ struct zileanTests {
         )
         let entry = WorkLogEntry(
             taskTitle: "DART / 공시: 초안",
+            plannedDurationMinutes: 25,
             startedAt: completedAt.addingTimeInterval(-75),
             completedAt: completedAt,
-            retrospective: "핵심 숫자를 빠르게 확인했다. 다음에는 공시 요약을 팀에 공유한다."
+            retrospective: "핵심 숫자를 빠르게 확인했다. 다음에는 공시 요약을 팀에 공유한다.",
+            conversation: [
+                ConversationMessage(
+                    role: .user,
+                    text: "DART 공시 초안을 25분 안에 정리할게요.",
+                    createdAt: completedAt.addingTimeInterval(-90)
+                ),
+                ConversationMessage(
+                    role: .agent,
+                    text: "핵심 숫자부터 확인해 보세요.",
+                    createdAt: completedAt.addingTimeInterval(-80)
+                ),
+            ]
         )
         let store = WorkLogStore(calendar: calendar)
 
@@ -298,9 +311,40 @@ struct zileanTests {
         #expect(firstURL.path.hasSuffix("work-records/2026-08-22/DART-공시-초안.md"))
         #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
         #expect(markdown.contains("task_title: \"DART / 공시: 초안\""))
+        #expect(markdown.contains("planned_focus_minutes: 25"))
         #expect(markdown.contains("elapsed_seconds: 75"))
+        #expect(markdown.contains("duration_difference_seconds: -1425"))
+        #expect(markdown.contains("conversation_context_status: recorded"))
+        #expect(markdown.contains("conversation_context_message_count: 2"))
+        #expect(markdown.contains("## 시간 기록"))
+        #expect(markdown.contains("계획한 집중 시간: 25분"))
+        #expect(markdown.contains("## 대화 맥락"))
+        #expect(markdown.contains("### 1. 사용자"))
+        #expect(markdown.contains("DART 공시 초안을 25분 안에 정리할게요."))
+        #expect(markdown.contains("### 2. 어시스턴트"))
         #expect(markdown.contains("## 회고와 후속 작업"))
         #expect(markdown.contains("다음에는 공시 요약을 팀에 공유한다."))
+    }
+
+    @Test func recordsMissingConversationContextExplicitly() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let completedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        let entry = WorkLogEntry(
+            taskTitle: "맥락 없는 작업",
+            startedAt: completedAt.addingTimeInterval(-60),
+            completedAt: completedAt,
+            retrospective: "완료했습니다."
+        )
+
+        let url = try WorkLogStore().save(entry, in: directory)
+        let markdown = try String(contentsOf: url, encoding: .utf8)
+
+        #expect(markdown.contains("planned_focus_minutes: null"))
+        #expect(markdown.contains("duration_difference_seconds: null"))
+        #expect(markdown.contains("conversation_context_status: unavailable"))
+        #expect(markdown.contains("conversation_context_message_count: 0"))
+        #expect(markdown.contains("저장된 대화가 없습니다."))
     }
 
     @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
@@ -576,6 +620,12 @@ struct zileanTests {
 
         #expect(viewModel.retrospectiveStatus == .answered)
         #expect(markdown.contains("# 작업 기록 저장"))
+        #expect(markdown.contains("planned_focus_minutes: 25"))
+        #expect(markdown.contains("elapsed_seconds: 90"))
+        #expect(markdown.contains("duration_difference_seconds: -1410"))
+        #expect(markdown.contains("conversation_context_status: recorded"))
+        #expect(markdown.contains("conversation_context_message_count: 1"))
+        #expect(markdown.contains("### 1. 사용자"))
         #expect(markdown.contains("핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."))
     }
 
