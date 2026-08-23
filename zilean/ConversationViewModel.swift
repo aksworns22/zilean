@@ -81,6 +81,7 @@ enum RetrospectiveStatus: Equatable {
     case waiting
     case requesting
     case prompted
+    case answering
     case answered
     case skipped
     case failed(String)
@@ -118,6 +119,7 @@ final class ConversationViewModel: ObservableObject {
     private enum ActiveTurn {
         case user
         case retrospective(timerID: UUID)
+        case retrospectiveFeedback(timerID: UUID)
         case feedback
     }
 
@@ -307,9 +309,9 @@ final class ConversationViewModel: ObservableObject {
         }
         workSessions[activeWorkIndex].messages.append(ConversationMessage(role: .user, text: text))
         workSessions[activeWorkIndex].updatedAt = .now
-        handleUserInputDuringRetrospective(text)
+        let retrospectiveTimerID = handleUserInputDuringRetrospective(text)
         phase = .responding
-        activeTurn = .user
+        activeTurn = retrospectiveTimerID.map(ActiveTurn.retrospectiveFeedback) ?? .user
 
         do {
             _ = try await client.startTurn(threadID: threadID, text: text)
@@ -437,15 +439,18 @@ final class ConversationViewModel: ObservableObject {
         guard pendingRetrospectiveTimer != nil else { return }
 
         if case .saveFailed = retrospectiveStatus,
-           let answer = pendingRetrospectiveAnswer,
            let timer = pendingRetrospectiveTimer {
-            saveRetrospectiveAnswer(answer, for: timer)
+            saveRetrospective(for: timer)
             return
         }
         guard case .failed = retrospectiveStatus else { return }
 
-        retrospectiveStatus = .waiting
-        await requestRetrospectiveIfPossible()
+        if pendingRetrospectiveAnswer != nil {
+            await requestRetrospectiveFeedbackIfPossible()
+        } else {
+            retrospectiveStatus = .waiting
+            await requestRetrospectiveIfPossible()
+        }
     }
 
     @discardableResult
@@ -494,6 +499,15 @@ final class ConversationViewModel: ObservableObject {
                         errorMessage ?? "회고를 시작하지 못했습니다. 다시 시도해 주세요."
                     )
                 }
+            case let .retrospectiveFeedback(timerID):
+                guard pendingRetrospectiveTimer?.id == timerID else { return }
+                if status == .completed, let timer = pendingRetrospectiveTimer {
+                    saveRetrospective(for: timer)
+                } else {
+                    failRetrospective(
+                        errorMessage ?? "회고 피드백을 완료하지 못했습니다. 다시 시도해 주세요."
+                    )
+                }
             case .user:
                 if status == .completed {
                     Task { @MainActor [weak self] in
@@ -512,8 +526,12 @@ final class ConversationViewModel: ObservableObject {
 
         case let .processExited(message), let .protocolError(message):
             let wasRetrospectiveTurn = activeTurn.map { turn in
-                if case .retrospective = turn { return true }
-                return false
+                switch turn {
+                case .retrospective, .retrospectiveFeedback:
+                    true
+                case .user, .feedback:
+                    false
+                }
             } ?? false
             activeTurn = nil
             activeAgentItemID = nil
@@ -643,7 +661,7 @@ final class ConversationViewModel: ObservableObject {
         switch retrospectiveStatus {
         case .waiting, .failed:
             break
-        case .idle, .requesting, .prompted, .answered, .skipped, .saveFailed:
+        case .idle, .requesting, .prompted, .answering, .answered, .skipped, .saveFailed:
             return
         }
 
@@ -689,7 +707,19 @@ final class ConversationViewModel: ObservableObject {
         - 실제 경과 시간: \(elapsedSeconds)초
         - 완료 시각: \(completedAtText)
 
-        이 이벤트를 기술적인 형식으로 설명하지 말고, 기존 작업 대화의 맥락을 이어서 한국어로 짧고 부담 없는 회고와 다음 행동을 한 번 유도해라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
+        이 이벤트를 기술적인 형식으로 설명하지 말고, 기존 작업 대화의 맥락을 이어서 아래 두 관점의 짧은 회고 대화를 시작해라.
+
+        1. 작업 완료 시간 예측의 정확성
+        - 사용자가 예상한 완료 시간과 실제 완료 시간을 비교한다.
+        - 차이가 났다면 대화 맥락에서 범위의 불명확성, 예상 밖 작업, 집중 중단 등의 원인을 함께 살핀다.
+        - 다음 작업의 예상 시간을 현실적으로 보정할 한 가지 기준을 제안한다.
+
+        2. 작업 집중도의 밀도
+        - 단순 경과 시간이 아니라 목표 작업에 지속적으로 몰입했는지를 살핀다.
+        - 대화에 드러난 우선순위 변경, 막힘, 산만한 전환, 재작업, 명확한 진척을 근거로 사용한다.
+        - 오래 작업한 시간 대신 의미 있게 진척된 집중 시간을 함께 해석한다.
+
+        먼저 사용자가 당시의 계획, 실제 진행, 방해·막힘을 보탤 수 있는 질문을 하나만 해라. 사용자가 답하면 두 관점을 모두 다루는 근거 있는 피드백을 제공해라. 기록에 없는 사실은 추측하지 말고 정보가 부족하다고 밝혀라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
         """
     }
 
@@ -704,29 +734,57 @@ final class ConversationViewModel: ObservableObject {
         """
     }
 
-    private func handleUserInputDuringRetrospective(_ answer: String) {
-        guard pendingRetrospectiveTimer != nil else { return }
+    private func handleUserInputDuringRetrospective(_ answer: String) -> UUID? {
+        guard let timer = pendingRetrospectiveTimer else { return nil }
 
         switch retrospectiveStatus {
         case .prompted:
-            if let timer = pendingRetrospectiveTimer {
-                saveRetrospectiveAnswer(answer, for: timer)
-            }
+            pendingRetrospectiveAnswer = answer
+            retrospectiveStatus = .answering
+            return timer.id
         case .waiting, .failed:
             retrospectiveStatus = .skipped
             pendingRetrospectiveTimer = nil
             pendingRetrospectiveAnswer = nil
-        case .idle, .requesting, .answered, .skipped, .saveFailed:
-            break
+        case .idle, .requesting, .answering, .answered, .skipped, .saveFailed:
+            return nil
+        }
+        return nil
+    }
+
+    private func requestRetrospectiveFeedbackIfPossible() async {
+        guard let timer = pendingRetrospectiveTimer,
+              pendingRetrospectiveAnswer != nil,
+              let work = workSessions.first(where: { $0.id == timer.workID })
+        else { return }
+        guard !phase.isBusy, client.isConnected else {
+            failRetrospective("회고 피드백을 재시도할 수 없습니다. 연결을 확인해 주세요.")
+            return
+        }
+
+        activeWorkID = work.id
+        selectedDirectory = work.directory
+        activeAgentItemID = nil
+        retrospectiveStatus = .answering
+        phase = .responding
+        activeTurn = .retrospectiveFeedback(timerID: timer.id)
+
+        do {
+            _ = try await client.startTurn(
+                threadID: work.threadID,
+                text: "[Zilean 내부 이벤트: 회고 피드백 재시도] 바로 앞의 사용자 회고 답변과 작업 대화를 바탕으로, 시간 예측 정확도와 집중도에 대한 피드백을 마무리해라."
+            )
+        } catch {
+            activeTurn = nil
+            failRetrospective(error.localizedDescription)
         }
     }
 
-    private func saveRetrospectiveAnswer(_ answer: String, for timer: FocusTimerSession) {
+    private func saveRetrospective(for timer: FocusTimerSession) {
         guard let completedAt = timer.completedAt,
               let work = workSessions.first(where: { $0.id == timer.workID })
         else {
             retrospectiveStatus = .saveFailed("작업 기록을 저장할 작업 정보를 찾지 못했습니다.")
-            pendingRetrospectiveAnswer = answer
             return
         }
 
@@ -737,7 +795,6 @@ final class ConversationViewModel: ObservableObject {
                     plannedDurationMinutes: timer.durationMinutes,
                     startedAt: timer.startedAt,
                     completedAt: completedAt,
-                    retrospective: answer,
                     conversation: work.messages
                 ),
                 in: work.directory
@@ -749,7 +806,6 @@ final class ConversationViewModel: ObservableObject {
             retrospectiveStatus = .saveFailed(
                 "작업 기록을 저장하지 못했습니다: \(error.localizedDescription)"
             )
-            pendingRetrospectiveAnswer = answer
         }
     }
 
@@ -757,11 +813,11 @@ final class ConversationViewModel: ObservableObject {
         guard pendingRetrospectiveTimer != nil else { return }
 
         switch retrospectiveStatus {
-        case .waiting, .failed, .prompted, .saveFailed:
+        case .waiting, .failed, .prompted, .answering, .saveFailed:
             retrospectiveStatus = .skipped
             pendingRetrospectiveTimer = nil
             pendingRetrospectiveAnswer = nil
-        case .idle, .requesting, .answered, .skipped, .saveFailed:
+        case .idle, .requesting, .answered, .skipped:
             break
         }
     }

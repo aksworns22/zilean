@@ -288,7 +288,6 @@ struct zileanTests {
             plannedDurationMinutes: 25,
             startedAt: completedAt.addingTimeInterval(-75),
             completedAt: completedAt,
-            retrospective: "핵심 숫자를 빠르게 확인했다. 다음에는 공시 요약을 팀에 공유한다.",
             conversation: [
                 ConversationMessage(
                     role: .user,
@@ -318,12 +317,11 @@ struct zileanTests {
         #expect(markdown.contains("conversation_context_message_count: 2"))
         #expect(markdown.contains("## 시간 기록"))
         #expect(markdown.contains("계획한 집중 시간: 25분"))
-        #expect(markdown.contains("## 대화 맥락"))
+        #expect(markdown.contains("## AI와의 작업 회고 대화"))
         #expect(markdown.contains("### 1. 사용자"))
         #expect(markdown.contains("DART 공시 초안을 25분 안에 정리할게요."))
         #expect(markdown.contains("### 2. 어시스턴트"))
-        #expect(markdown.contains("## 회고와 후속 작업"))
-        #expect(markdown.contains("다음에는 공시 요약을 팀에 공유한다."))
+        #expect(!markdown.contains("## 회고와 후속 작업"))
     }
 
     @Test func recordsMissingConversationContextExplicitly() throws {
@@ -333,8 +331,7 @@ struct zileanTests {
         let entry = WorkLogEntry(
             taskTitle: "맥락 없는 작업",
             startedAt: completedAt.addingTimeInterval(-60),
-            completedAt: completedAt,
-            retrospective: "완료했습니다."
+            completedAt: completedAt
         )
 
         let url = try WorkLogStore().save(entry, in: directory)
@@ -495,6 +492,8 @@ struct zileanTests {
         #expect(prompt.contains("회고 대상 작업"))
         #expect(prompt.contains("계획한 집중 시간: 25분"))
         #expect(prompt.contains("실제 경과 시간: 75초"))
+        #expect(prompt.contains("작업 완료 시간 예측의 정확성"))
+        #expect(prompt.contains("작업 집중도의 밀도"))
 
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
@@ -540,7 +539,7 @@ struct zileanTests {
         #expect(viewModel.retrospectiveStatus == .prompted)
     }
 
-    @Test @MainActor func recordsRetrospectiveAnswerAndDoesNotPromptTwice() async throws {
+    @Test @MainActor func savesRetrospectiveAfterTheAIRespondsToTheUser() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
@@ -568,8 +567,15 @@ struct zileanTests {
         viewModel.draft = "핵심 로직을 정리했고 다음에는 테스트를 보강할게요."
         await viewModel.sendMessage()
 
+        #expect(viewModel.retrospectiveStatus == .answering)
+        client.onEvent?(.agentMessageDelta(
+            itemID: "retrospective-feedback",
+            text: "예상보다 빨랐습니다. 다음에는 검증 시간을 별도로 잡아 보세요."
+        ))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
         #expect(viewModel.retrospectiveStatus == .answered)
-        #expect(viewModel.messages.last?.text == "핵심 로직을 정리했고 다음에는 테스트를 보강할게요.")
+        #expect(viewModel.messages.last?.text == "예상보다 빨랐습니다. 다음에는 검증 시간을 별도로 잡아 보세요.")
 
         await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(60))
         #expect(client.startTurnTexts.count == 2)
@@ -602,6 +608,11 @@ struct zileanTests {
         viewModel.draft = "핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."
 
         await viewModel.sendMessage()
+        client.onEvent?(.agentMessageDelta(
+            itemID: "retrospective-feedback",
+            text: "계획 대비 실제 시간이 짧았습니다. 다음에는 검토 시간을 따로 잡아 보세요."
+        ))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
         let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
         let dateDirectory = try #require(
@@ -624,9 +635,12 @@ struct zileanTests {
         #expect(markdown.contains("elapsed_seconds: 90"))
         #expect(markdown.contains("duration_difference_seconds: -1410"))
         #expect(markdown.contains("conversation_context_status: recorded"))
-        #expect(markdown.contains("conversation_context_message_count: 1"))
+        #expect(markdown.contains("conversation_context_message_count: 2"))
         #expect(markdown.contains("### 1. 사용자"))
         #expect(markdown.contains("핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."))
+        #expect(markdown.contains("### 2. 어시스턴트"))
+        #expect(markdown.contains("계획 대비 실제 시간이 짧았습니다."))
+        #expect(!markdown.contains("## 회고와 후속 작업"))
     }
 
     @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {

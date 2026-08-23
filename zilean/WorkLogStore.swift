@@ -5,7 +5,6 @@ struct WorkLogEntry: Equatable {
     let plannedDurationMinutes: Int?
     let startedAt: Date
     let completedAt: Date
-    let retrospective: String
     let conversation: [ConversationMessage]
 
     init(
@@ -13,14 +12,12 @@ struct WorkLogEntry: Equatable {
         plannedDurationMinutes: Int? = nil,
         startedAt: Date,
         completedAt: Date,
-        retrospective: String,
         conversation: [ConversationMessage] = []
     ) {
         self.taskTitle = taskTitle
         self.plannedDurationMinutes = plannedDurationMinutes
         self.startedAt = startedAt
         self.completedAt = completedAt
-        self.retrospective = retrospective
         self.conversation = conversation
     }
 }
@@ -126,13 +123,9 @@ struct WorkLogStore {
         - 실제 소요 시간: \(elapsedSeconds)초
         - 계획 대비 차이: \(durationDifferenceDescription(durationDifference))
 
-        ## 대화 맥락
+        ## AI와의 작업 회고 대화
 
         \(conversationMarkdown(for: meaningfulMessages))
-
-        ## 회고와 후속 작업
-
-        \(entry.retrospective.trimmingCharacters(in: .whitespacesAndNewlines))
         """
     }
 
