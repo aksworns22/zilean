@@ -5,6 +5,15 @@ nonisolated struct ZileanMCPProtocol {
     static let startTimerToolName = "start_focus_timer"
 
     let configurationDirectory: URL
+    private let promptTemplateLoader: any PromptTemplateLoading
+
+    init(
+        configurationDirectory: URL,
+        promptTemplateLoader: any PromptTemplateLoading = BundlePromptTemplateLoader()
+    ) {
+        self.configurationDirectory = configurationDirectory
+        self.promptTemplateLoader = promptTemplateLoader
+    }
 
     private var commandStore: ZileanMCPCommandStore {
         ZileanMCPCommandStore(rootDirectory: configurationDirectory)
@@ -17,6 +26,12 @@ nonisolated struct ZileanMCPProtocol {
         case "initialize":
             let requestedVersion = request.value(at: "params", "protocolVersion")?.stringValue
                 ?? "2025-06-18"
+            let instructions: String
+            do {
+                instructions = try promptTemplateLoader.load(.mcpInstructions)
+            } catch {
+                return failure(id: id, code: -32000, message: error.localizedDescription)
+            }
             return success(
                 id: id,
                 result: [
@@ -29,9 +44,7 @@ nonisolated struct ZileanMCPProtocol {
                         "title": .string("Zilean"),
                         "version": .string("0.1.0"),
                     ]),
-                    "instructions": .string(
-                        "Zilean의 앱 상태와 집중 타이머를 제공한다. 사용자가 작업명과 추천 시간에 명시적으로 동의한 뒤에만 start_focus_timer를 호출한다. 도구가 성공하기 전에는 타이머가 시작되었다고 말하지 않는다. 상태 확인은 zilean_status를 사용한다."
-                    ),
+                    "instructions": .string(instructions),
                 ]
             )
 

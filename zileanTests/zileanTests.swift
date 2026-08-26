@@ -156,6 +156,21 @@ struct zileanTests {
         ])
     }
 
+    @Test func MCPServerLoadsInstructionsFromPromptFile() throws {
+        let protocolHandler = ZileanMCPProtocol(
+            configurationDirectory: URL(fileURLWithPath: "/tmp/zilean-mcp-test")
+        )
+        let request = try AppServerMessage(
+            data: Data(#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#.utf8)
+        )
+
+        let response = try #require(protocolHandler.response(to: request))
+        let message = AppServerMessage(payload: response)
+        let instructions = try BundlePromptTemplateLoader().load(.mcpInstructions)
+
+        #expect(message.value(at: "result", "instructions")?.stringValue == instructions)
+    }
+
     @Test func MCPStatusToolReturnsConfigurationDirectory() throws {
         let configurationDirectory = URL(fileURLWithPath: "/tmp/zilean-mcp-test")
         let protocolHandler = ZileanMCPProtocol(configurationDirectory: configurationDirectory)
@@ -952,7 +967,8 @@ struct zileanTests {
 
         let instructionsURL = directory.appendingPathComponent("AGENTS.md")
         let instructions = try String(contentsOf: instructionsURL, encoding: .utf8)
-        #expect(instructions == CodexHarnessPreparer.instructions)
+        let expectedInstructions = try BundlePromptTemplateLoader().load(.codexInstructions)
+        #expect(instructions == expectedInstructions)
     }
 
     @Test @MainActor func preservesExistingAgentInstructions() throws {
@@ -995,8 +1011,35 @@ struct zileanTests {
         viewModel.selectDirectory(directory)
         await viewModel.createConversation()
 
-        #expect(client.instructionsAtThreadStart == CodexHarnessPreparer.instructions)
+        let expectedInstructions = try BundlePromptTemplateLoader().load(.codexInstructions)
+        #expect(client.instructionsAtThreadStart == expectedInstructions)
         #expect(viewModel.phase == .idle)
+    }
+
+    @Test func rendersPromptTemplateWithDynamicValues() throws {
+        let prompt = try BundlePromptTemplateLoader().render(.feedback, values: [
+            "feedbackContext": "- 피드백 대상 작업: 자료 정리",
+            "question": "다음에는 어떻게 할까?",
+        ])
+
+        #expect(prompt.contains("피드백 대상 작업: 자료 정리"))
+        #expect(prompt.contains("사용자 질문: 다음에는 어떻게 할까?"))
+        #expect(!prompt.contains("{{feedbackContext}}"))
+        #expect(!prompt.contains("{{question}}"))
+    }
+
+    @Test func reportsMissingPromptFilesClearly() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let expectedError = PromptTemplateLoadingError.fileNotFound(.codexInstructions)
+        let preparer = CodexHarnessPreparer(
+            promptTemplateLoader: StubPromptTemplateLoader(error: expectedError)
+        )
+
+        #expect(throws: expectedError) {
+            try preparer.prepare(in: directory)
+        }
+        #expect(expectedError.localizedDescription.contains("프롬프트 파일을 찾을 수 없습니다"))
     }
 
     @Test @MainActor func doesNotStartThreadWhenHarnessPreparationFails() async {
@@ -1069,6 +1112,25 @@ private struct StubHarnessPreparer: CodexHarnessPreparing {
         if let error {
             throw error
         }
+    }
+}
+
+private struct StubPromptTemplateLoader: PromptTemplateLoading {
+    var error: Error?
+
+    init(error: Error? = nil) {
+        self.error = error
+    }
+
+    func load(_ template: ZileanPromptTemplate) throws -> String {
+        if let error {
+            throw error
+        }
+        return "\(template.displayName)"
+    }
+
+    func render(_ template: ZileanPromptTemplate, values: [String: String]) throws -> String {
+        try load(template)
     }
 }
 
