@@ -106,6 +106,7 @@ final class ConversationViewModel: ObservableObject {
     private let harnessPreparer: CodexHarnessPreparing
     private let timerCommandStore: ZileanMCPCommandStore
     private let workLogStore: WorkLogStore
+    private let promptTemplateLoader: any PromptTemplateLoading
     private var activeAgentItemID: String?
     private var timerMonitorTask: Task<Void, Never>?
     private var focusTimerPresentationRefreshTimer: Timer?
@@ -199,7 +200,8 @@ final class ConversationViewModel: ObservableObject {
             harnessPreparer: CodexHarnessPreparer(),
             timerCommandStore: ZileanMCPCommandStore(
                 rootDirectory: mcpConfiguration.rootDirectory
-            )
+            ),
+            promptTemplateLoader: BundlePromptTemplateLoader()
         )
     }
 
@@ -209,7 +211,8 @@ final class ConversationViewModel: ObservableObject {
             harnessPreparer: CodexHarnessPreparer(),
             timerCommandStore: ZileanMCPCommandStore(
                 rootDirectory: ZileanMCPConfiguration().rootDirectory
-            )
+            ),
+            promptTemplateLoader: BundlePromptTemplateLoader()
         )
     }
 
@@ -219,12 +222,14 @@ final class ConversationViewModel: ObservableObject {
         timerCommandStore: ZileanMCPCommandStore = ZileanMCPCommandStore(
             rootDirectory: ZileanMCPConfiguration().rootDirectory
         ),
-        workLogStore: WorkLogStore = WorkLogStore()
+        workLogStore: WorkLogStore = WorkLogStore(),
+        promptTemplateLoader: any PromptTemplateLoading = BundlePromptTemplateLoader()
     ) {
         self.client = client
         self.harnessPreparer = harnessPreparer
         self.timerCommandStore = timerCommandStore
         self.workLogStore = workLogStore
+        self.promptTemplateLoader = promptTemplateLoader
         client.onEvent = { [weak self] event in
             self?.handle(event)
         }
@@ -357,7 +362,7 @@ final class ConversationViewModel: ObservableObject {
             }
             _ = try await client.startTurn(
                 threadID: threadID,
-                text: feedbackPrompt(insights: insights, question: question)
+                text: try feedbackPrompt(insights: insights, question: question)
             )
         } catch {
             activeTurn = nil
@@ -686,7 +691,7 @@ final class ConversationViewModel: ObservableObject {
         do {
             _ = try await client.startTurn(
                 threadID: work.threadID,
-                text: retrospectivePrompt(for: timer)
+                text: try retrospectivePrompt(for: timer)
             )
         } catch {
             activeTurn = nil
@@ -694,56 +699,24 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
-    private func retrospectivePrompt(for timer: FocusTimerSession) -> String {
+    private func retrospectivePrompt(for timer: FocusTimerSession) throws -> String {
         let completedAt = timer.completedAt ?? .now
         let elapsedSeconds = max(0, Int(timer.elapsed(at: completedAt)))
         let completedAtText = ISO8601DateFormatter().string(from: completedAt)
 
-        return """
-        [Zilean 내부 이벤트: 집중 타이머 완료]
-        사용자가 아래 작업의 집중 타이머를 완료했다.
-        - 작업명: \(timer.taskTitle)
-        - 계획한 집중 시간: \(timer.durationMinutes)분
-        - 실제 경과 시간: \(elapsedSeconds)초
-        - 완료 시각: \(completedAtText)
-
-        이 이벤트를 기술적인 형식으로 설명하지 말고, 기존 작업 대화의 맥락을 이어서 아래 두 관점의 짧은 회고 대화를 시작해라.
-
-        1. 작업 완료 시간 예측의 정확성
-        - 사용자가 예상한 완료 시간과 실제 완료 시간을 비교한다.
-        - 차이가 났다면 대화 맥락에서 범위의 불명확성, 예상 밖 작업, 집중 중단 등의 원인을 함께 살핀다.
-        - 다음 작업의 예상 시간을 현실적으로 보정할 한 가지 기준을 제안한다.
-
-        2. 작업 집중도의 밀도
-        - 단순 경과 시간이 아니라 목표 작업에 지속적으로 몰입했는지를 살핀다.
-        - 대화에 드러난 우선순위 변경, 막힘, 산만한 전환, 재작업, 명확한 진척을 근거로 사용한다.
-        - 오래 작업한 시간 대신 의미 있게 진척된 집중 시간을 함께 해석한다.
-
-        먼저 사용자가 당시의 계획, 실제 진행, 방해·막힘을 보탤 수 있는 질문을 하나만 해라. 사용자가 답하면 두 관점을 모두 다루는 근거 있는 피드백을 아래 Markdown 형식으로만 제공해라.
-
-        ## 작업 완료 시간 예측의 정확성
-        - 판단: ...
-        - 근거: ...
-        - 다음 보정: ...
-
-        ## 작업 집중도의 밀도
-        - 판단: ...
-        - 근거: ...
-        - 다음 행동: ...
-
-        기록에 없는 사실은 추측하지 말고 정보가 부족하다고 밝혀라. 사용자가 이미 회고 내용을 말한 맥락이면 같은 질문을 반복하지 말고, 회고를 건너뛰거나 다른 요청을 하면 강요하지 마라.
-        """
+        return try promptTemplateLoader.render(.retrospective, values: [
+            "taskTitle": timer.taskTitle,
+            "durationMinutes": String(timer.durationMinutes),
+            "elapsedSeconds": String(elapsedSeconds),
+            "completedAt": completedAtText,
+        ])
     }
 
-    private func feedbackPrompt(insights: FeedbackInsights, question: String) -> String {
-        """
-        [Zilean 내부 이벤트: 피드백받기]
-        아래는 사용자가 선택한 기간의 실제 완료 작업 기록이다. 이 데이터만을 근거로 패턴과 개선 가능한 다음 행동을 한국어로 친절하고 간결하게 안내해라. 기록에 없는 사실을 추측하지 말고, 사용자의 질문에 직접 답해라.
-
-        \(insights.contextForFeedback)
-
-        사용자 질문: \(question)
-        """
+    private func feedbackPrompt(insights: FeedbackInsights, question: String) throws -> String {
+        try promptTemplateLoader.render(.feedback, values: [
+            "feedbackContext": insights.contextForFeedback,
+            "question": question,
+        ])
     }
 
     private func handleUserInputDuringRetrospective(_ answer: String) -> UUID? {
@@ -784,7 +757,7 @@ final class ConversationViewModel: ObservableObject {
         do {
             _ = try await client.startTurn(
                 threadID: work.threadID,
-                text: "[Zilean 내부 이벤트: 회고 피드백 재시도] 바로 앞의 사용자 회고 답변과 작업 대화를 바탕으로, 시간 예측 정확도와 집중도에 대한 피드백을 마무리해라."
+                text: try promptTemplateLoader.load(.retrospectiveFeedback)
             )
         } catch {
             activeTurn = nil

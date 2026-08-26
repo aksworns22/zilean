@@ -33,6 +33,18 @@ codex login status
 
 앱은 Codex app-server를 시작할 때 Zilean의 로컬 STDIO MCP 서버를 함께 연결합니다. MCP 런타임 파일은 `~/Library/Application Support/Zilean/MCP`에 두며, 사용자의 전역 Codex 설정 파일은 변경하지 않습니다.
 
+## 프롬프트 실험
+
+AI·MCP 지침은 [`zilean/Prompts`](zilean/Prompts)에 Markdown 파일로 관리합니다. 문구를 수정한 뒤 앱을 다시 빌드하면 변경된 프롬프트로 실험할 수 있습니다.
+
+- `codex-instructions.md`: 새 작업 대화에서 만드는 `AGENTS.md`의 기본 지침
+- `mcp-instructions.md`: MCP 서버 초기화 지침
+- `retrospective.md`: 집중 타이머 완료 후 회고 시작
+- `retrospective-feedback.md`: 회고 답변 뒤 피드백 재시도
+- `feedback.md`: 기간별 작업 기록 피드백
+
+`{{...}}` 표시는 작업명·시간·대화 기록·사용자 질문처럼 실행 시 주입되는 값입니다. 파일을 찾지 못하거나 읽을 수 없으면 앱 또는 MCP가 원인을 포함한 오류를 반환합니다.
+
 ## 집중 타이머
 
 1. 대화에서 시작할 작업을 말합니다.
