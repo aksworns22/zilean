@@ -94,6 +94,7 @@ final class ConversationViewModel: ObservableObject {
     @Published private(set) var workSessions: [WorkSession] = []
     @Published private(set) var activeWorkID: UUID?
     @Published private(set) var selectedDirectory: URL?
+    @Published private(set) var directoryError: String?
     @Published private(set) var focusTimer: FocusTimerSession?
     @Published private(set) var focusTimerPresentation: FocusTimerPresentation?
     @Published private(set) var retrospectiveStatus: RetrospectiveStatus = .idle
@@ -106,6 +107,8 @@ final class ConversationViewModel: ObservableObject {
     private let harnessPreparer: CodexHarnessPreparing
     private let timerCommandStore: ZileanMCPCommandStore
     private let workLogStore: WorkLogStore
+    private let workDirectoryStore: WorkDirectoryStore
+    private var savedDirectory: URL?
     private let promptTemplateLoader: any PromptTemplateLoading
     private var activeAgentItemID: String?
     private var timerMonitorTask: Task<Void, Never>?
@@ -223,13 +226,22 @@ final class ConversationViewModel: ObservableObject {
             rootDirectory: ZileanMCPConfiguration().rootDirectory
         ),
         workLogStore: WorkLogStore = WorkLogStore(),
+        workDirectoryStore: WorkDirectoryStore = WorkDirectoryStore(),
         promptTemplateLoader: any PromptTemplateLoading = BundlePromptTemplateLoader()
     ) {
         self.client = client
         self.harnessPreparer = harnessPreparer
         self.timerCommandStore = timerCommandStore
         self.workLogStore = workLogStore
+        self.workDirectoryStore = workDirectoryStore
         self.promptTemplateLoader = promptTemplateLoader
+        do {
+            savedDirectory = try workDirectoryStore.savedDirectory()
+            selectedDirectory = savedDirectory
+        } catch {
+            workDirectoryStore.clear()
+            directoryError = error.localizedDescription
+        }
         client.onEvent = { [weak self] event in
             self?.handle(event)
         }
@@ -253,8 +265,34 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
-    func selectDirectory(_ directory: URL) {
+    @discardableResult
+    func selectDirectory(_ directory: URL) -> Bool {
         selectedDirectory = directory.standardizedFileURL
+        do {
+            savedDirectory = try workDirectoryStore.save(directory)
+            selectedDirectory = savedDirectory
+            directoryError = nil
+            return true
+        } catch {
+            directoryError = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    func useSavedDirectoryForNewWork() -> Bool {
+        guard let savedDirectory else { return false }
+        do {
+            selectedDirectory = try workDirectoryStore.validatedDirectory(savedDirectory)
+            directoryError = nil
+            return true
+        } catch {
+            self.savedDirectory = nil
+            selectedDirectory = nil
+            workDirectoryStore.clear()
+            directoryError = error.localizedDescription
+            return false
+        }
     }
 
     func startTimerMonitoring() {

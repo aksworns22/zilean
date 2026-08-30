@@ -10,6 +10,58 @@ import Testing
 @testable import zilean
 
 struct zileanTests {
+    @Test func savesAndRestoresSelectedWorkDirectory() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suiteName = "WorkDirectoryStoreTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let store = WorkDirectoryStore(userDefaults: defaults)
+
+        #expect(try store.savedDirectory() == nil)
+        #expect(try store.save(directory) == directory.standardizedFileURL)
+        #expect(try store.savedDirectory() == directory.standardizedFileURL)
+    }
+
+    @Test func rejectsUnavailableSavedWorkDirectory() throws {
+        let suiteName = "WorkDirectoryStoreTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let missingDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let store = WorkDirectoryStore(userDefaults: defaults)
+
+        defaults.set(missingDirectory.path, forKey: WorkDirectoryStore.directoryPathKey)
+
+        #expect(throws: WorkDirectoryStoreError.notDirectory) {
+            _ = try store.savedDirectory()
+        }
+    }
+
+    @Test @MainActor func restoresSavedDirectoryWhenTheViewModelIsRecreated() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let suiteName = "WorkDirectoryStoreTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let store = WorkDirectoryStore(userDefaults: defaults)
+
+        let firstViewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            workDirectoryStore: store
+        )
+        #expect(firstViewModel.selectDirectory(directory))
+
+        let restoredViewModel = ConversationViewModel(
+            client: StubAppServerClient(),
+            harnessPreparer: StubHarnessPreparer(),
+            workDirectoryStore: store
+        )
+        #expect(restoredViewModel.selectedDirectory == directory.standardizedFileURL)
+        #expect(restoredViewModel.directoryError == nil)
+    }
+
     @Test func parsesMarkdownBlockStructure() {
         let source = """
         # 계획
