@@ -69,6 +69,18 @@ struct ContentView: View {
                     closeTimerSetup()
                     selectedDestination = .feedback
                 }
+
+                Button(action: changeDirectory) {
+                    Label("저장 위치 변경", systemImage: "folder.badge.gearshape")
+                        .font(.callout)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.secondary)
+                .disabled(viewModel.phase.isBusy)
             }
             .padding(.horizontal, 12)
 
@@ -211,7 +223,12 @@ struct ContentView: View {
 
     private var workspaceStatus: some View {
         HStack {
-            if let directory = viewModel.selectedDirectory {
+            if let error = viewModel.directoryError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            } else if let directory = viewModel.selectedDirectory {
                 Button {
                     startNewWork(choosingDirectory: true)
                 } label: {
@@ -506,8 +523,7 @@ struct ContentView: View {
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return false }
-        viewModel.selectDirectory(url)
-        return true
+        return viewModel.selectDirectory(url)
     }
 
     private func startNewWork() {
@@ -518,7 +534,8 @@ struct ContentView: View {
         closeTimerSetup()
         selectedDestination = .newWork
 
-        if choosingDirectory, !chooseDirectory() {
+        let needsDirectorySelection = choosingDirectory || !viewModel.useSavedDirectoryForNewWork()
+        if needsDirectorySelection && !chooseDirectory() {
             return
         }
 
@@ -529,6 +546,13 @@ struct ContentView: View {
             if viewModel.hasConversation {
                 selectedDestination = .currentWork
             }
+        }
+    }
+
+    private func changeDirectory() {
+        closeTimerSetup()
+        if chooseDirectory() {
+            selectedDestination = .newWork
         }
     }
 
