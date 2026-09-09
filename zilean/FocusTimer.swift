@@ -21,7 +21,7 @@ nonisolated enum FocusTimerTimeFormatter {
     }
 }
 
-nonisolated struct FocusTimerSession: Identifiable, Equatable, Sendable {
+nonisolated struct FocusTimerSession: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let workID: UUID
     let taskTitle: String

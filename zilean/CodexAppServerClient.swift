@@ -53,6 +53,7 @@ protocol CodexAppServerServing: AnyObject {
 
     func connect() async throws
     func startThread(in directory: URL) async throws -> String
+    func resumeThread(id: String) async throws -> String
     func startTurn(threadID: String, text: String) async throws -> String
     func stop()
 }
@@ -228,6 +229,18 @@ final class CodexAppServerClient: CodexAppServerServing {
 
         guard let threadID = response.value(at: "result", "thread", "id")?.stringValue else {
             throw CodexAppServerError.invalidResponse("thread/start")
+        }
+        return threadID
+    }
+
+    func resumeThread(id: String) async throws -> String {
+        let response = try await request(
+            method: "thread/resume",
+            params: ["threadId": .string(id)]
+        )
+
+        guard let threadID = response.value(at: "result", "thread", "id")?.stringValue else {
+            throw CodexAppServerError.invalidResponse("thread/resume")
         }
         return threadID
     }

@@ -1,8 +1,8 @@
 import Combine
 import Foundation
 
-struct ConversationMessage: Identifiable, Equatable {
-    enum Role: Equatable {
+nonisolated struct ConversationMessage: Identifiable, Codable, Equatable, Sendable {
+    enum Role: String, Codable, Equatable, Sendable {
         case user
         case agent
     }
@@ -82,8 +82,8 @@ enum RetrospectiveStatus: Equatable {
     case requesting
     case prompted
     case answering
+    case finalizing
     case answered
-    case skipped
     case failed(String)
     case saveFailed(String)
 }
@@ -106,8 +106,9 @@ final class ConversationViewModel: ObservableObject {
     private let client: CodexAppServerServing
     private let harnessPreparer: CodexHarnessPreparing
     private let timerCommandStore: ZileanMCPCommandStore
-    private let workLogStore: WorkLogStore
+    private let workLogStore: any WorkLogStoring
     private let workDirectoryStore: WorkDirectoryStore
+    private let retrospectiveDraftStore: RetrospectiveDraftStore
     private var savedDirectory: URL?
     private let promptTemplateLoader: any PromptTemplateLoading
     private var activeAgentItemID: String?
@@ -115,7 +116,11 @@ final class ConversationViewModel: ObservableObject {
     private var focusTimerPresentationRefreshTimer: Timer?
     private var pendingTimerResponses: [UUID: ZileanMCPCommandResponse] = [:]
     private var pendingRetrospectiveTimer: FocusTimerSession?
-    private var pendingRetrospectiveAnswer: String?
+    private var pendingRetrospectiveID: UUID?
+    private var pendingRetrospectiveSummary: String?
+    private var retrospectiveStage: RetrospectiveDraftStage?
+    private var retrospectiveThreadIsResumed = true
+    private var summaryMessageStartIndex: Int?
     private var activeTurn: ActiveTurn?
     private var feedbackThreadID: String?
     private var activeFeedbackAgentItemID: String?
@@ -125,8 +130,9 @@ final class ConversationViewModel: ObservableObject {
 
     private enum ActiveTurn {
         case user
-        case retrospective(timerID: UUID)
-        case retrospectiveFeedback(timerID: UUID)
+        case retrospectivePrompt(timerID: UUID)
+        case retrospectiveReply(timerID: UUID)
+        case retrospectiveSummary(timerID: UUID)
         case feedback
     }
 
@@ -149,7 +155,14 @@ final class ConversationViewModel: ObservableObject {
     }
 
     var canCreateConversation: Bool {
-        selectedDirectory != nil && client.isConnected && !phase.isBusy
+        selectedDirectory != nil
+            && client.isConnected
+            && !phase.isBusy
+            && !isRetrospectiveInProgress
+    }
+
+    var canCreateNewWork: Bool {
+        !isRetrospectiveInProgress && !phase.isBusy
     }
 
     var hasConversation: Bool {
@@ -161,6 +174,10 @@ final class ConversationViewModel: ObservableObject {
             && client.isConnected
             && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !phase.isBusy
+            && (
+                !isRetrospectiveInProgress
+                    || (isActiveWorkRetrospective && retrospectiveStatus == .prompted)
+            )
     }
 
     var canComposeFeedback: Bool {
@@ -179,7 +196,7 @@ final class ConversationViewModel: ObservableObject {
     }
 
     var canRetryRetrospective: Bool {
-        guard pendingRetrospectiveTimer != nil, client.isConnected, !phase.isBusy else {
+        guard pendingRetrospectiveTimer != nil, !phase.isBusy else {
             return false
         }
         switch retrospectiveStatus {
@@ -188,6 +205,25 @@ final class ConversationViewModel: ObservableObject {
         default:
             return false
         }
+    }
+
+    var isRetrospectiveInProgress: Bool {
+        pendingRetrospectiveTimer != nil
+    }
+
+    var pendingRetrospectiveWorkID: UUID? {
+        pendingRetrospectiveTimer?.workID
+    }
+
+    var isActiveWorkRetrospective: Bool {
+        activeWorkID == pendingRetrospectiveWorkID && isRetrospectiveInProgress
+    }
+
+    var canFinishRetrospective: Bool {
+        isActiveWorkRetrospective
+            && retrospectiveStage == .ready
+            && client.isConnected
+            && !phase.isBusy
     }
 
     var retrospectiveError: String? {
@@ -204,6 +240,7 @@ final class ConversationViewModel: ObservableObject {
             .filter {
                 $0.directory.standardizedFileURL == selectedDirectory?.standardizedFileURL
                     && !savedWorkIDs.contains($0.id)
+                    && $0.id != pendingRetrospectiveWorkID
             }
             .compactMap(FeedbackRecord.init)
         let storedIdentities = Set(storedFeedbackRecords.map(\.identity))
@@ -245,16 +282,19 @@ final class ConversationViewModel: ObservableObject {
         timerCommandStore: ZileanMCPCommandStore = ZileanMCPCommandStore(
             rootDirectory: ZileanMCPConfiguration().rootDirectory
         ),
-        workLogStore: WorkLogStore = WorkLogStore(),
+        workLogStore: (any WorkLogStoring)? = nil,
         workDirectoryStore: WorkDirectoryStore = WorkDirectoryStore(),
-        promptTemplateLoader: any PromptTemplateLoading = BundlePromptTemplateLoader()
+        promptTemplateLoader: any PromptTemplateLoading = BundlePromptTemplateLoader(),
+        retrospectiveDraftStore: RetrospectiveDraftStore? = nil
     ) {
         self.client = client
         self.harnessPreparer = harnessPreparer
         self.timerCommandStore = timerCommandStore
-        self.workLogStore = workLogStore
+        self.workLogStore = workLogStore ?? WorkLogStore()
         self.workDirectoryStore = workDirectoryStore
         self.promptTemplateLoader = promptTemplateLoader
+        self.retrospectiveDraftStore = retrospectiveDraftStore
+            ?? RetrospectiveDraftStore(rootDirectory: timerCommandStore.rootDirectory)
         do {
             savedDirectory = try workDirectoryStore.savedDirectory()
             selectedDirectory = savedDirectory
@@ -266,23 +306,28 @@ final class ConversationViewModel: ObservableObject {
         client.onEvent = { [weak self] event in
             self?.handle(event)
         }
+        restoreRetrospectiveDraft()
     }
 
     func connect() async {
-        guard !client.isConnected else {
-            if activeWorkID == nil {
-                phase = .ready
+        if retrospectiveStage == .saving, let timer = pendingRetrospectiveTimer {
+            saveRetrospective(for: timer)
+            if isRetrospectiveInProgress {
+                return
             }
-            return
         }
 
         phase = .connecting
         do {
-            try await client.connect()
-            phase = .ready
-            await requestRetrospectiveIfPossible()
+            if !client.isConnected {
+                try await client.connect()
+            }
+            try await resumeRetrospectiveThreadIfNeeded()
+            if !isRetrospectiveInProgress {
+                phase = activeWorkID == nil ? .ready : .idle
+            }
         } catch {
-            phase = .failed(error.localizedDescription)
+            failRetrospectiveRestore(error.localizedDescription)
         }
     }
 
@@ -345,9 +390,11 @@ final class ConversationViewModel: ObservableObject {
     }
 
     func createConversation() async {
-        guard let selectedDirectory, client.isConnected else { return }
+        guard let selectedDirectory,
+              client.isConnected,
+              !isRetrospectiveInProgress
+        else { return }
 
-        skipPendingRetrospective()
         phase = .creatingConversation
         do {
             try harnessPreparer.prepare(in: selectedDirectory)
@@ -375,6 +422,8 @@ final class ConversationViewModel: ObservableObject {
         guard let activeWorkIndex, !text.isEmpty, !phase.isBusy, client.isConnected else { return }
 
         let threadID = workSessions[activeWorkIndex].threadID
+        let isRetrospectiveReply = isActiveWorkRetrospective && retrospectiveStage == .ready
+        guard !isRetrospectiveInProgress || isRetrospectiveReply else { return }
 
         draft = ""
         activeAgentItemID = nil
@@ -383,15 +432,34 @@ final class ConversationViewModel: ObservableObject {
         }
         workSessions[activeWorkIndex].messages.append(ConversationMessage(role: .user, text: text))
         workSessions[activeWorkIndex].updatedAt = .now
-        let retrospectiveTimerID = handleUserInputDuringRetrospective(text)
+        if isRetrospectiveReply {
+            retrospectiveStage = .responding
+            retrospectiveStatus = .answering
+            do {
+                try persistRetrospectiveDraft(stage: .responding)
+            } catch {
+                workSessions[activeWorkIndex].messages.removeLast()
+                retrospectiveStage = .ready
+                retrospectiveStatus = .prompted
+                draft = text
+                failRetrospective("회고 초안을 저장하지 못했습니다: \(error.localizedDescription)")
+                return
+            }
+        }
         phase = .responding
-        activeTurn = retrospectiveTimerID.map(ActiveTurn.retrospectiveFeedback) ?? .user
+        activeTurn = isRetrospectiveReply
+            ? pendingRetrospectiveTimer.map { .retrospectiveReply(timerID: $0.id) }
+            : .user
 
         do {
             _ = try await client.startTurn(threadID: threadID, text: text)
         } catch {
             activeTurn = nil
-            phase = .failed(error.localizedDescription)
+            if isRetrospectiveReply {
+                failRetrospective(error.localizedDescription)
+            } else {
+                phase = .failed(error.localizedDescription)
+            }
         }
     }
 
@@ -445,9 +513,6 @@ final class ConversationViewModel: ObservableObject {
     func selectWork(id: UUID) {
         guard !phase.isBusy, let session = workSessions.first(where: { $0.id == id }) else { return }
 
-        if id != activeWorkID {
-            skipPendingRetrospective()
-        }
         activeWorkID = session.id
         if selectedDirectory?.standardizedFileURL != session.directory.standardizedFileURL {
             selectedDirectory = session.directory
@@ -502,7 +567,17 @@ final class ConversationViewModel: ObservableObject {
         updateFocusTimer(timer)
         refreshFocusTimerPresentation(at: date)
         pendingRetrospectiveTimer = timer
+        pendingRetrospectiveID = timer.id
+        pendingRetrospectiveSummary = nil
+        retrospectiveStage = .starting
+        retrospectiveThreadIsResumed = true
         retrospectiveStatus = .waiting
+        do {
+            try persistRetrospectiveDraft(stage: .starting)
+        } catch {
+            failRetrospective("회고 초안을 저장하지 못했습니다: \(error.localizedDescription)")
+            return
+        }
         await requestRetrospectiveIfPossible()
     }
 
@@ -519,19 +594,78 @@ final class ConversationViewModel: ObservableObject {
     func retryRetrospective() async {
         guard pendingRetrospectiveTimer != nil else { return }
 
-        if case .saveFailed = retrospectiveStatus,
-           let timer = pendingRetrospectiveTimer {
-            saveRetrospective(for: timer)
+        if !client.isConnected || !retrospectiveThreadIsResumed {
+            await connect()
             return
         }
-        guard case .failed = retrospectiveStatus else { return }
 
-        if pendingRetrospectiveAnswer != nil {
-            await requestRetrospectiveFeedbackIfPossible()
-        } else {
+        switch retrospectiveStage {
+        case .starting:
             retrospectiveStatus = .waiting
             await requestRetrospectiveIfPossible()
+        case .responding:
+            await retryRetrospectiveReply()
+        case .summarizing:
+            await finishRetrospective()
+        case .saving:
+            if let timer = pendingRetrospectiveTimer {
+                do {
+                    try persistRetrospectiveDraft(
+                        stage: .saving,
+                        finalSummary: pendingRetrospectiveSummary
+                    )
+                    saveRetrospective(for: timer)
+                } catch {
+                    retrospectiveStatus = .saveFailed(
+                        "최종 회고 초안을 저장하지 못했습니다: \(error.localizedDescription)"
+                    )
+                }
+            }
+        case .ready:
+            do {
+                try persistRetrospectiveDraft(stage: .ready)
+                retrospectiveStatus = .prompted
+                phase = .completed
+            } catch {
+                failRetrospective("회고 초안을 저장하지 못했습니다: \(error.localizedDescription)")
+            }
+        case .none:
+            break
         }
+    }
+
+    func finishRetrospective() async {
+        guard let timer = pendingRetrospectiveTimer,
+              let workIndex = workSessions.firstIndex(where: { $0.id == timer.workID }),
+              retrospectiveStage == .ready || retrospectiveStage == .summarizing,
+              !phase.isBusy,
+              client.isConnected,
+              retrospectiveThreadIsResumed
+        else { return }
+
+        retrospectiveStage = .summarizing
+        retrospectiveStatus = .finalizing
+        phase = .responding
+        activeAgentItemID = nil
+        summaryMessageStartIndex = workSessions[workIndex].messages.count
+        activeTurn = .retrospectiveSummary(timerID: timer.id)
+
+        do {
+            try persistRetrospectiveDraft(stage: .summarizing)
+            _ = try await client.startTurn(
+                threadID: workSessions[workIndex].threadID,
+                text: try promptTemplateLoader.load(.retrospectiveFeedback)
+            )
+        } catch {
+            activeTurn = nil
+            removeIncompleteSummaryIfNeeded()
+            failRetrospective(error.localizedDescription)
+        }
+    }
+
+    func returnToPendingRetrospective() {
+        guard let workID = pendingRetrospectiveWorkID else { return }
+        selectWork(id: workID)
     }
 
     @discardableResult
@@ -571,22 +705,47 @@ final class ConversationViewModel: ObservableObject {
             }
 
             switch completedTurn {
-            case let .retrospective(timerID):
+            case let .retrospectivePrompt(timerID):
                 guard pendingRetrospectiveTimer?.id == timerID else { return }
                 if status == .completed {
+                    retrospectiveStage = .ready
                     retrospectiveStatus = .prompted
+                    persistCompletedRetrospectiveTurn(stage: .ready)
                 } else {
                     failRetrospective(
                         errorMessage ?? "회고를 시작하지 못했습니다. 다시 시도해 주세요."
                     )
                 }
-            case let .retrospectiveFeedback(timerID):
+            case let .retrospectiveReply(timerID):
                 guard pendingRetrospectiveTimer?.id == timerID else { return }
-                if status == .completed, let timer = pendingRetrospectiveTimer {
-                    saveRetrospective(for: timer)
+                if status == .completed {
+                    retrospectiveStage = .ready
+                    retrospectiveStatus = .prompted
+                    persistCompletedRetrospectiveTurn(stage: .ready)
                 } else {
                     failRetrospective(
-                        errorMessage ?? "회고 피드백을 완료하지 못했습니다. 다시 시도해 주세요."
+                        errorMessage ?? "회고 답변을 완료하지 못했습니다. 다시 시도해 주세요."
+                    )
+                }
+            case let .retrospectiveSummary(timerID):
+                guard let timer = pendingRetrospectiveTimer, timer.id == timerID else { return }
+                if status == .completed,
+                   let summary = completedSummaryText() {
+                    pendingRetrospectiveSummary = summary
+                    retrospectiveStage = .saving
+                    do {
+                        try persistRetrospectiveDraft(stage: .saving, finalSummary: summary)
+                        saveRetrospective(for: timer)
+                    } catch {
+                        retrospectiveStatus = .saveFailed(
+                            "최종 회고 초안을 저장하지 못했습니다: \(error.localizedDescription)"
+                        )
+                        phase = .failed(error.localizedDescription)
+                    }
+                } else {
+                    removeIncompleteSummaryIfNeeded()
+                    failRetrospective(
+                        errorMessage ?? "최종 회고를 생성하지 못했습니다. 다시 시도해 주세요."
                     )
                 }
             case .user:
@@ -608,7 +767,7 @@ final class ConversationViewModel: ObservableObject {
         case let .processExited(message), let .protocolError(message):
             let wasRetrospectiveTurn = activeTurn.map { turn in
                 switch turn {
-                case .retrospective, .retrospectiveFeedback:
+                case .retrospectivePrompt, .retrospectiveReply, .retrospectiveSummary:
                     true
                 case .user, .feedback:
                     false
@@ -617,7 +776,10 @@ final class ConversationViewModel: ObservableObject {
             activeTurn = nil
             activeAgentItemID = nil
             phase = .failed(message)
-            if wasRetrospectiveTurn {
+            if isRetrospectiveInProgress {
+                retrospectiveThreadIsResumed = false
+            }
+            if wasRetrospectiveTurn || isRetrospectiveInProgress {
                 retrospectiveStatus = .failed(message)
             }
         }
@@ -685,6 +847,13 @@ final class ConversationViewModel: ObservableObject {
                 message: "타이머를 연결할 활성 작업이 없습니다."
             )
         }
+        if isRetrospectiveInProgress {
+            return .failed(
+                commandID: command.id,
+                code: "retrospective_in_progress",
+                message: "진행 중인 회고를 마친 뒤 새 타이머를 시작해 주세요."
+            )
+        }
         if focusTimer?.status == .running {
             return .failed(
                 commandID: command.id,
@@ -699,9 +868,6 @@ final class ConversationViewModel: ObservableObject {
             durationMinutes: command.durationMinutes,
             startedAt: now
         )
-        pendingRetrospectiveTimer = nil
-        pendingRetrospectiveAnswer = nil
-        retrospectiveStatus = .idle
         focusTimer = session
         refreshFocusTimerPresentation(at: now)
         if let activeWorkIndex {
@@ -742,7 +908,7 @@ final class ConversationViewModel: ObservableObject {
         switch retrospectiveStatus {
         case .waiting, .failed:
             break
-        case .idle, .requesting, .prompted, .answering, .answered, .skipped, .saveFailed:
+        case .idle, .requesting, .prompted, .answering, .finalizing, .answered, .saveFailed:
             return
         }
 
@@ -762,9 +928,11 @@ final class ConversationViewModel: ObservableObject {
         activeAgentItemID = nil
         retrospectiveStatus = .requesting
         phase = .responding
-        activeTurn = .retrospective(timerID: timer.id)
+        retrospectiveStage = .starting
+        activeTurn = .retrospectivePrompt(timerID: timer.id)
 
         do {
+            try persistRetrospectiveDraft(stage: .starting)
             _ = try await client.startTurn(
                 threadID: work.threadID,
                 text: try retrospectivePrompt(for: timer)
@@ -811,31 +979,14 @@ final class ConversationViewModel: ObservableObject {
         ])
     }
 
-    private func handleUserInputDuringRetrospective(_ answer: String) -> UUID? {
-        guard let timer = pendingRetrospectiveTimer else { return nil }
-
-        switch retrospectiveStatus {
-        case .prompted:
-            pendingRetrospectiveAnswer = answer
-            retrospectiveStatus = .answering
-            return timer.id
-        case .waiting, .failed:
-            retrospectiveStatus = .skipped
-            pendingRetrospectiveTimer = nil
-            pendingRetrospectiveAnswer = nil
-        case .idle, .requesting, .answering, .answered, .skipped, .saveFailed:
-            return nil
-        }
-        return nil
-    }
-
-    private func requestRetrospectiveFeedbackIfPossible() async {
+    private func retryRetrospectiveReply() async {
         guard let timer = pendingRetrospectiveTimer,
-              pendingRetrospectiveAnswer != nil,
-              let work = workSessions.first(where: { $0.id == timer.workID })
-        else { return }
-        guard !phase.isBusy, client.isConnected else {
-            failRetrospective("회고 피드백을 재시도할 수 없습니다. 연결을 확인해 주세요.")
+              let work = workSessions.first(where: { $0.id == timer.workID }),
+              let answer = work.messages.last(where: { $0.role == .user })?.text,
+              !phase.isBusy,
+              client.isConnected
+        else {
+            failRetrospective("회고 답변을 재시도할 수 없습니다. 연결을 확인해 주세요.")
             return
         }
 
@@ -844,13 +995,11 @@ final class ConversationViewModel: ObservableObject {
         activeAgentItemID = nil
         retrospectiveStatus = .answering
         phase = .responding
-        activeTurn = .retrospectiveFeedback(timerID: timer.id)
+        activeTurn = .retrospectiveReply(timerID: timer.id)
 
         do {
-            _ = try await client.startTurn(
-                threadID: work.threadID,
-                text: try promptTemplateLoader.load(.retrospectiveFeedback)
-            )
+            try persistRetrospectiveDraft(stage: .responding)
+            _ = try await client.startTurn(threadID: work.threadID, text: answer)
         } catch {
             activeTurn = nil
             failRetrospective(error.localizedDescription)
@@ -859,21 +1008,26 @@ final class ConversationViewModel: ObservableObject {
 
     private func saveRetrospective(for timer: FocusTimerSession) {
         guard let completedAt = timer.completedAt,
-              let work = workSessions.first(where: { $0.id == timer.workID })
+              let work = workSessions.first(where: { $0.id == timer.workID }),
+              let summary = pendingRetrospectiveSummary?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ),
+              !summary.isEmpty
         else {
-            retrospectiveStatus = .saveFailed("작업 기록을 저장할 작업 정보를 찾지 못했습니다.")
+            retrospectiveStatus = .saveFailed("저장할 최종 회고와 작업 정보를 찾지 못했습니다.")
             return
         }
 
         do {
             _ = try workLogStore.save(
                 WorkLogEntry(
+                    retrospectiveID: pendingRetrospectiveID,
                     taskTitle: timer.taskTitle,
                     plannedDurationMinutes: timer.durationMinutes,
                     startedAt: timer.startedAt,
                     completedAt: completedAt,
                     conversation: work.messages,
-                    retrospectiveFeedback: work.messages.last(where: { $0.role == .agent })?.text
+                    retrospectiveFeedback: summary
                 ),
                 in: work.directory
             )
@@ -881,9 +1035,13 @@ final class ConversationViewModel: ObservableObject {
             if work.directory.standardizedFileURL == selectedDirectory?.standardizedFileURL {
                 refreshFeedbackRecords()
             }
+            try retrospectiveDraftStore.clear()
             retrospectiveStatus = .answered
             pendingRetrospectiveTimer = nil
-            pendingRetrospectiveAnswer = nil
+            pendingRetrospectiveID = nil
+            pendingRetrospectiveSummary = nil
+            retrospectiveStage = nil
+            summaryMessageStartIndex = nil
         } catch {
             retrospectiveStatus = .saveFailed(
                 "작업 기록을 저장하지 못했습니다: \(error.localizedDescription)"
@@ -891,22 +1049,163 @@ final class ConversationViewModel: ObservableObject {
         }
     }
 
-    private func skipPendingRetrospective() {
-        guard pendingRetrospectiveTimer != nil else { return }
+    private func failRetrospective(_ message: String) {
+        retrospectiveStatus = .failed(message)
+        phase = .failed(message)
+    }
 
-        switch retrospectiveStatus {
-        case .waiting, .failed, .prompted, .answering, .saveFailed:
-            retrospectiveStatus = .skipped
-            pendingRetrospectiveTimer = nil
-            pendingRetrospectiveAnswer = nil
-        case .idle, .requesting, .answered, .skipped:
+    private func failRetrospectiveRestore(_ message: String) {
+        if isRetrospectiveInProgress {
+            retrospectiveThreadIsResumed = false
+            retrospectiveStatus = .failed("진행 중인 회고를 복원하지 못했습니다: \(message)")
+        }
+        phase = .failed(message)
+    }
+
+    private func restoreRetrospectiveDraft() {
+        do {
+            guard let draft = try retrospectiveDraftStore.load() else { return }
+            let directory = URL(fileURLWithPath: draft.directoryPath).standardizedFileURL
+            let session = WorkSession(
+                id: draft.workID,
+                threadID: draft.threadID,
+                directory: directory,
+                title: draft.title,
+                startedAt: draft.workStartedAt,
+                updatedAt: draft.workUpdatedAt,
+                messages: draft.messages,
+                focusTimer: draft.timer
+            )
+            workSessions.removeAll { $0.id == session.id }
+            workSessions.append(session)
+            activeWorkID = session.id
+            selectedDirectory = directory
+            focusTimer = draft.timer
+            pendingRetrospectiveTimer = draft.timer
+            pendingRetrospectiveID = draft.id
+            pendingRetrospectiveSummary = draft.finalSummary
+            retrospectiveStage = draft.stage
+            retrospectiveThreadIsResumed = false
+            retrospectiveStatus = .waiting
+            refreshFocusTimerPresentation(at: draft.timer.completedAt ?? .now)
+        } catch {
+            retrospectiveStatus = .failed(
+                "저장된 회고 초안을 읽지 못했습니다: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func resumeRetrospectiveThreadIfNeeded() async throws {
+        guard let timer = pendingRetrospectiveTimer,
+              let stage = retrospectiveStage,
+              !retrospectiveThreadIsResumed,
+              let work = workSessions.first(where: { $0.id == timer.workID })
+        else {
+            if isRetrospectiveInProgress, retrospectiveThreadIsResumed {
+                await continueRestoredRetrospectiveIfNeeded()
+            }
+            return
+        }
+
+        try harnessPreparer.prepare(in: work.directory)
+        let resumedID = try await client.resumeThread(id: work.threadID)
+        guard resumedID == work.threadID else {
+            throw CodexAppServerError.invalidResponse("thread/resume")
+        }
+        retrospectiveThreadIsResumed = true
+        retrospectiveStage = stage
+        await continueRestoredRetrospectiveIfNeeded()
+    }
+
+    private func continueRestoredRetrospectiveIfNeeded() async {
+        guard isRetrospectiveInProgress else { return }
+
+        switch retrospectiveStage {
+        case .starting:
+            phase = .idle
+            retrospectiveStatus = .waiting
+            await requestRetrospectiveIfPossible()
+        case .ready:
+            phase = .idle
+            retrospectiveStatus = .prompted
+        case .responding:
+            phase = .failed("AI 응답이 완료되지 않았습니다. 회고 재시도를 눌러 이어가세요.")
+            retrospectiveStatus = .failed("AI 응답이 완료되지 않았습니다. 회고 재시도를 눌러 이어가세요.")
+        case .summarizing:
+            phase = .failed("최종 회고 생성이 완료되지 않았습니다. 다시 시도해 주세요.")
+            retrospectiveStatus = .failed("최종 회고 생성이 완료되지 않았습니다. 다시 시도해 주세요.")
+        case .saving:
+            if let timer = pendingRetrospectiveTimer {
+                saveRetrospective(for: timer)
+            }
+        case .none:
             break
         }
     }
 
-    private func failRetrospective(_ message: String) {
-        retrospectiveStatus = .failed(message)
-        phase = .failed(message)
+    private func persistRetrospectiveDraft(
+        stage: RetrospectiveDraftStage,
+        finalSummary: String? = nil
+    ) throws {
+        guard let timer = pendingRetrospectiveTimer,
+              let work = workSessions.first(where: { $0.id == timer.workID })
+        else {
+            throw CodexAppServerError.invalidResponse("retrospective/draft")
+        }
+
+        let retrospectiveID = pendingRetrospectiveID ?? timer.id
+        pendingRetrospectiveID = retrospectiveID
+        retrospectiveStage = stage
+        if let finalSummary {
+            pendingRetrospectiveSummary = finalSummary
+        }
+        try retrospectiveDraftStore.save(
+            RetrospectiveDraft(
+                id: retrospectiveID,
+                workID: work.id,
+                threadID: work.threadID,
+                directoryPath: work.directory.path,
+                title: work.title,
+                workStartedAt: work.startedAt,
+                workUpdatedAt: work.updatedAt,
+                messages: work.messages,
+                timer: timer,
+                stage: stage,
+                finalSummary: finalSummary ?? pendingRetrospectiveSummary
+            )
+        )
+    }
+
+    private func persistCompletedRetrospectiveTurn(stage: RetrospectiveDraftStage) {
+        do {
+            try persistRetrospectiveDraft(stage: stage)
+            phase = .completed
+        } catch {
+            failRetrospective("회고 초안을 저장하지 못했습니다: \(error.localizedDescription)")
+        }
+    }
+
+    private func completedSummaryText() -> String? {
+        guard let workIndex = workSessions.firstIndex(where: { $0.id == pendingRetrospectiveWorkID }),
+              let startIndex = summaryMessageStartIndex,
+              startIndex < workSessions[workIndex].messages.count
+        else { return nil }
+
+        return workSessions[workIndex].messages[startIndex...]
+            .filter { $0.role == .agent }
+            .map(\.text)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func removeIncompleteSummaryIfNeeded() {
+        guard let workIndex = workSessions.firstIndex(where: { $0.id == pendingRetrospectiveWorkID }),
+              let startIndex = summaryMessageStartIndex,
+              startIndex <= workSessions[workIndex].messages.count
+        else { return }
+        workSessions[workIndex].messages.removeSubrange(startIndex...)
+        summaryMessageStartIndex = nil
+        activeAgentItemID = nil
     }
 
     private func refreshFeedbackRecords() {

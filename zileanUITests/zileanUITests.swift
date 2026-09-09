@@ -50,7 +50,7 @@ final class zileanUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["이 기간에 완료한 집중 작업이 없어요."].exists)
         XCTAssertTrue(app.staticTexts["피드백을 위한 기록을 쌓아보세요"].exists)
         XCTAssertTrue(app.buttons["오늘 기록 보기"].exists)
-        XCTAssertTrue(app.buttons["이번 주 기록 보기"].exists)
+        XCTAssertTrue(app.buttons["전체 기록 보기"].exists)
     }
 
     @MainActor

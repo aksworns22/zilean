@@ -19,6 +19,10 @@ nonisolated struct ZileanMCPProtocol {
         ZileanMCPCommandStore(rootDirectory: configurationDirectory)
     }
 
+    private var retrospectiveDraftStore: RetrospectiveDraftStore {
+        RetrospectiveDraftStore(rootDirectory: configurationDirectory)
+    }
+
     func response(to request: AppServerMessage) -> [String: JSONValue]? {
         guard let id = request.payload["id"] else { return nil }
 
@@ -137,6 +141,7 @@ nonisolated struct ZileanMCPProtocol {
             structuredContent: [
                 "connected": .bool(true),
                 "configurationDirectory": .string(configurationDirectory.path),
+                "retrospectiveInProgress": .bool(retrospectiveDraftStore.hasActiveDraft),
             ],
             message: "Zilean MCP 서버가 연결되어 있습니다.",
             isError: false
@@ -147,6 +152,18 @@ nonisolated struct ZileanMCPProtocol {
         id: JSONValue,
         request: AppServerMessage
     ) -> [String: JSONValue] {
+        if retrospectiveDraftStore.hasActiveDraft {
+            return toolResult(
+                id: id,
+                structuredContent: [
+                    "success": .bool(false),
+                    "errorCode": .string("retrospective_in_progress"),
+                ],
+                message: "진행 중인 회고를 마친 뒤 새 타이머를 시작해 주세요.",
+                isError: true
+            )
+        }
+
         let taskTitle = (
             request.value(at: "params", "arguments", "taskTitle")?.stringValue ?? ""
         ).trimmingCharacters(in: .whitespacesAndNewlines)

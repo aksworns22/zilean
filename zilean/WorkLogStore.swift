@@ -1,6 +1,13 @@
 import Foundation
 
+protocol WorkLogStoring {
+    @discardableResult
+    func save(_ entry: WorkLogEntry, in workDirectory: URL) throws -> URL
+    func loadFeedbackRecords(in workDirectory: URL) -> WorkLogLoadResult
+}
+
 struct WorkLogEntry: Equatable {
+    let retrospectiveID: UUID?
     let taskTitle: String
     let plannedDurationMinutes: Int?
     let startedAt: Date
@@ -9,6 +16,7 @@ struct WorkLogEntry: Equatable {
     let retrospectiveFeedback: String?
 
     init(
+        retrospectiveID: UUID? = nil,
         taskTitle: String,
         plannedDurationMinutes: Int? = nil,
         startedAt: Date,
@@ -16,6 +24,7 @@ struct WorkLogEntry: Equatable {
         conversation: [ConversationMessage] = [],
         retrospectiveFeedback: String? = nil
     ) {
+        self.retrospectiveID = retrospectiveID
         self.taskTitle = taskTitle
         self.plannedDurationMinutes = plannedDurationMinutes
         self.startedAt = startedAt
@@ -30,7 +39,7 @@ struct WorkLogLoadResult: Equatable {
     let unreadablePaths: [String]
 }
 
-struct WorkLogStore {
+struct WorkLogStore: WorkLogStoring {
     private let fileManager: FileManager
     private let calendar: Calendar
 
@@ -50,10 +59,7 @@ struct WorkLogStore {
             attributes: nil
         )
 
-        let rawDestination = availableFileURL(
-            in: rawDirectory,
-            filename: safeFilename(from: entry.taskTitle)
-        )
+        let rawDestination = destinationURL(in: rawDirectory, for: entry)
         try write(rawMarkdown(for: entry), to: rawDestination)
 
         let wikiDirectory = recordsDirectory.appendingPathComponent("wiki", isDirectory: true)
@@ -67,10 +73,7 @@ struct WorkLogStore {
         )
         try ensureSchema(in: wikiDirectory)
 
-        let taskDestination = availableFileURL(
-            in: taskDirectory,
-            filename: safeFilename(from: entry.taskTitle)
-        )
+        let taskDestination = destinationURL(in: taskDirectory, for: entry)
         try write(
             wikiTaskMarkdown(for: entry, rawURL: rawDestination, taskURL: taskDestination),
             to: taskDestination
@@ -201,6 +204,18 @@ struct WorkLogStore {
         return url
     }
 
+    private func destinationURL(in directory: URL, for entry: WorkLogEntry) -> URL {
+        guard let retrospectiveID = entry.retrospectiveID else {
+            return availableFileURL(in: directory, filename: safeFilename(from: entry.taskTitle))
+        }
+        let filename = safeFilename(from: entry.taskTitle)
+        let stem = filename.isEmpty ? "work-log" : filename
+        return directory.appendingPathComponent(
+            "\(stem)--\(retrospectiveID.uuidString.lowercased()).md",
+            isDirectory: false
+        )
+    }
+
     private func safeFilename(from title: String) -> String {
         let reservedCharacters = CharacterSet(charactersIn: "/\\:?*\"<>|")
         let replaced = title.unicodeScalars.map { scalar in
@@ -230,9 +245,11 @@ struct WorkLogStore {
         let plannedSecondsYAML = plannedSeconds.map(String.init) ?? "null"
         let durationDifferenceYAML = durationDifference.map(String.init) ?? "null"
         let contextStatus = meaningfulMessages.isEmpty ? "unavailable" : "recorded"
+        let retrospectiveIDYAML = entry.retrospectiveID?.uuidString.lowercased() ?? "null"
 
         return """
         ---
+        retrospective_id: \(retrospectiveIDYAML)
         task_title: \(yamlString(title))
         planned_focus_minutes: \(plannedMinutesYAML)
         planned_focus_seconds: \(plannedSecondsYAML)
@@ -262,7 +279,6 @@ struct WorkLogStore {
 
     private func wikiTaskMarkdown(for entry: WorkLogEntry, rawURL: URL, taskURL: URL) -> String {
         let completedAt = formattedTimestamp(entry.completedAt)
-        let startedAt = formattedTimestamp(entry.startedAt)
         let elapsedSeconds = max(0, Int(entry.completedAt.timeIntervalSince(entry.startedAt)))
         let title = entry.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawPath = relativePath(from: taskURL.deletingLastPathComponent(), to: rawURL)
@@ -332,6 +348,7 @@ struct WorkLogStore {
         let taskPath = relativePath(from: wikiDirectory, to: taskURL)
         let rawPath = relativePath(from: wikiDirectory, to: rawURL)
         let lines = """
+        \(retrospectiveMarker(for: entry))
         - [\(markdownLinkText(entry.taskTitle))](<\(taskPath)>) — 완료 \(formattedTimestamp(entry.completedAt)) · 계획 \(plannedDurationDescription(entry.plannedDurationMinutes)) · 실제 \(actualDurationDescription(for: entry)) · 차이 \(durationDifferenceDescription(durationDifference(for: entry)))
           - 집중도: \(focusDensitySummary(for: entry))
           - 원본: [대화 원문](<\(rawPath)>)
@@ -343,6 +360,10 @@ struct WorkLogStore {
 
         ## 기록
         """
+
+        if let marker = retrospectiveMarkerIfPresent(for: entry), contents.contains(marker) {
+            return
+        }
 
         try write("\(contents.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(lines)\n", to: indexURL)
     }
@@ -358,6 +379,7 @@ struct WorkLogStore {
         let taskPath = relativePath(from: wikiDirectory, to: taskURL)
         let rawPath = relativePath(from: wikiDirectory, to: rawURL)
         let entryText = """
+        \(retrospectiveMarker(for: entry))
         ## [\(formattedTimestamp(entry.completedAt))] 작업 기록 생성 · \(entry.taskTitle.trimmingCharacters(in: .whitespacesAndNewlines))
 
         - 작업 페이지: [\(markdownLinkText(entry.taskTitle))](<\(taskPath)>)
@@ -372,7 +394,19 @@ struct WorkLogStore {
         작업 기록 위키에 반영된 시점을 시간순으로 남기는 append-only 이력입니다.
         """
 
+        if let marker = retrospectiveMarkerIfPresent(for: entry), contents.contains(marker) {
+            return
+        }
+
         try write("\(contents.trimmingCharacters(in: .whitespacesAndNewlines))\n\n\(entryText)\n", to: logURL)
+    }
+
+    private func retrospectiveMarker(for entry: WorkLogEntry) -> String {
+        retrospectiveMarkerIfPresent(for: entry) ?? ""
+    }
+
+    private func retrospectiveMarkerIfPresent(for entry: WorkLogEntry) -> String? {
+        entry.retrospectiveID.map { "<!-- retrospective-id: \($0.uuidString.lowercased()) -->" }
     }
 
     private func existingContents(of url: URL) throws -> String? {
