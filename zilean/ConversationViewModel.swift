@@ -285,17 +285,18 @@ final class ConversationViewModel: ObservableObject {
     @discardableResult
     func selectDirectory(_ directory: URL) -> Bool {
         let previousDirectory = selectedDirectory?.standardizedFileURL
-        selectedDirectory = directory.standardizedFileURL
         do {
-            savedDirectory = try workDirectoryStore.save(directory)
-            selectedDirectory = savedDirectory
+            let saved = try workDirectoryStore.save(directory)
+            savedDirectory = saved
+            selectedDirectory = saved
             directoryError = nil
-            if previousDirectory != savedDirectory {
+            if previousDirectory != saved {
                 resetFeedbackConversation()
             }
             refreshFeedbackRecords()
             return true
         } catch {
+            selectedDirectory = previousDirectory
             directoryError = error.localizedDescription
             return false
         }
