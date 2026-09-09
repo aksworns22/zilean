@@ -39,6 +39,9 @@ struct ContentView: View {
         .task {
             viewModel.startTimerMonitoring()
             await viewModel.connect()
+            if viewModel.isRetrospectiveInProgress {
+                selectedDestination = .currentWork
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
             viewModel.shutdown()
@@ -59,7 +62,29 @@ struct ContentView: View {
                     destination: .newWork,
                     action: startNewWork
                 )
-                .disabled(viewModel.phase.isBusy)
+                .disabled(!viewModel.canCreateNewWork)
+
+                if viewModel.isRetrospectiveInProgress {
+                    Button {
+                        closeTimerSetup()
+                        viewModel.returnToPendingRetrospective()
+                        selectedDestination = .currentWork
+                    } label: {
+                        Label("회고로 돌아가기", systemImage: "arrow.uturn.backward.circle.fill")
+                            .font(.callout.weight(.semibold))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(DesignPalette.sidebarActiveText)
+                    .background(
+                        DesignPalette.sidebarSelection,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
+                    .disabled(viewModel.phase.isBusy)
+                }
 
                 navigationButton(
                     title: "피드백받기",
@@ -80,7 +105,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Color.secondary)
-                .disabled(viewModel.phase.isBusy)
+                .disabled(viewModel.phase.isBusy || viewModel.isRetrospectiveInProgress)
             }
             .padding(.horizontal, 12)
 
@@ -238,6 +263,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
+                .disabled(viewModel.phase.isBusy || viewModel.isRetrospectiveInProgress)
                 .help("다른 작업 폴더 선택")
             }
 
@@ -432,6 +458,25 @@ struct ContentView: View {
                 )
             }
 
+            if viewModel.isActiveWorkRetrospective {
+                HStack(spacing: 10) {
+                    Label("회고 중", systemImage: "text.bubble.fill")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(DesignPalette.sidebarActiveText)
+
+                    Spacer()
+
+                    Button("회고 마치기") {
+                        Task { await viewModel.finishRetrospective() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!viewModel.canFinishRetrospective)
+                    .accessibilityHint("전체 대화를 최종 정리하고 작업 기록으로 저장합니다")
+                }
+                .padding(.horizontal, 12)
+                .frame(maxWidth: 680)
+            }
+
             if isTimerSetupPresented {
                 DirectTimerSetupCard(
                     taskTitle: $timerSetupTaskTitle,
@@ -465,7 +510,11 @@ struct ContentView: View {
                         ? DesignPalette.timerSetupButtonForeground
                         : Color.secondary
                 )
-                .disabled(viewModel.phase.isBusy || selectedDestination == .feedback)
+                .disabled(
+                    viewModel.phase.isBusy
+                        || selectedDestination == .feedback
+                        || viewModel.isRetrospectiveInProgress
+                )
                 .accessibilityLabel(
                     isTimerSetupPresented ? "타이머 설정 닫기" : "타이머 직접 설정"
                 )
@@ -531,6 +580,7 @@ struct ContentView: View {
     }
 
     private func startNewWork(choosingDirectory: Bool) {
+        guard viewModel.canCreateNewWork else { return }
         closeTimerSetup()
         selectedDestination = .newWork
 
@@ -567,7 +617,10 @@ struct ContentView: View {
     }
 
     private func toggleTimerSetup() {
-        guard !viewModel.phase.isBusy, selectedDestination != .feedback else { return }
+        guard !viewModel.phase.isBusy,
+              selectedDestination != .feedback,
+              !viewModel.isRetrospectiveInProgress
+        else { return }
 
         if isTimerSetupPresented {
             closeTimerSetup()

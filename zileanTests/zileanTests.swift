@@ -486,7 +486,7 @@ struct zileanTests {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let now = Date.now
-        try WorkLogStore().save(
+        _ = try WorkLogStore().save(
             WorkLogEntry(
                 taskTitle: "위키 우선 작업",
                 plannedDurationMinutes: 25,
@@ -667,6 +667,8 @@ struct zileanTests {
         #expect(prompt.contains("실제 경과 시간: 75초"))
         #expect(prompt.contains("작업 완료 시간 예측의 정확성"))
         #expect(prompt.contains("작업 집중도의 밀도"))
+        #expect(prompt.contains("이미 답한 질문"))
+        #expect(prompt.contains("‘회고 마치기’ 버튼"))
 
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
@@ -712,7 +714,7 @@ struct zileanTests {
         #expect(viewModel.retrospectiveStatus == .prompted)
     }
 
-    @Test @MainActor func savesRetrospectiveAfterTheAIRespondsToTheUser() async throws {
+    @Test @MainActor func keepsRetrospectiveOpenUntilTheUserFinishesIt() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
@@ -741,17 +743,73 @@ struct zileanTests {
         await viewModel.sendMessage()
 
         #expect(viewModel.retrospectiveStatus == .answering)
+        #expect(!viewModel.canFinishRetrospective)
         client.onEvent?(.agentMessageDelta(
             itemID: "retrospective-feedback",
             text: "예상보다 빨랐습니다. 다음에는 검증 시간을 별도로 잡아 보세요."
         ))
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
-        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(viewModel.retrospectiveStatus == .prompted)
+        #expect(viewModel.isRetrospectiveInProgress)
+        #expect(viewModel.canFinishRetrospective)
         #expect(viewModel.messages.last?.text == "예상보다 빨랐습니다. 다음에는 검증 시간을 별도로 잡아 보세요.")
 
-        await viewModel.completeFocusTimer(at: startedAt.addingTimeInterval(60))
-        #expect(client.startTurnTexts.count == 2)
+        viewModel.draft = "이제 회고 그만할게요."
+        await viewModel.sendMessage()
+        client.onEvent?(.agentMessageDelta(itemID: "follow-up", text: "‘회고 마치기’ 버튼을 눌러 저장을 완료해 주세요."))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(viewModel.retrospectiveStatus == .prompted)
+        #expect(viewModel.isRetrospectiveInProgress)
+
+        await viewModel.finishRetrospective()
+        #expect(viewModel.retrospectiveStatus == .finalizing)
+        #expect(client.startTurnTexts.last?.contains("회고 마치기") == true)
+        #expect(client.startTurnTexts.last?.contains("## 주요 경험") == true)
+        #expect(client.startTurnTexts.last?.contains("## 배운 점") == true)
+        #expect(client.startTurnTexts.last?.contains("## 다음 행동") == true)
+        client.onEvent?(.agentMessageDelta(itemID: "summary", text: "## 작업 완료 시간 예측의 정확성\n- 판단: 적절했습니다."))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(!viewModel.isRetrospectiveInProgress)
+        #expect(viewModel.canCreateNewWork)
+    }
+
+    @Test @MainActor func retriesRetrospectiveReplyWhenSendingFails() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        _ = viewModel.startFocusTimer(taskTitle: "답변 재시도", durationMinutes: 25)
+        await viewModel.completeFocusTimer()
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        client.startTurnError = TestError.preparationFailed
+        viewModel.draft = "전송 전에 초안으로 남겨야 하는 답변"
+        await viewModel.sendMessage()
+
+        #expect(viewModel.retrospectiveStatus == .failed(TestError.preparationFailed.localizedDescription))
+        #expect(viewModel.canRetryRetrospective)
+        let savedDraft = try #require(try RetrospectiveDraftStore(rootDirectory: directory).load())
+        #expect(savedDraft.stage == .responding)
+        #expect(savedDraft.messages.last?.text == "전송 전에 초안으로 남겨야 하는 답변")
+
+        client.startTurnError = nil
+        await viewModel.retryRetrospective()
+
+        #expect(viewModel.retrospectiveStatus == .answering)
+        #expect(client.startTurnTexts.last == "전송 전에 초안으로 남겨야 하는 답변")
     }
 
     @Test @MainActor func savesRetrospectiveAnswerAsWorkLog() async throws {
@@ -797,6 +855,37 @@ struct zileanTests {
         ))
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
+        #expect(viewModel.retrospectiveStatus == .prompted)
+        #expect(!FileManager.default.fileExists(
+            atPath: directory.appendingPathComponent("work-records").path
+        ))
+
+        await viewModel.finishRetrospective()
+        client.onEvent?(.agentMessageDelta(
+            itemID: "retrospective-summary",
+            text: """
+            ## 작업 완료 시간 예측의 정확성
+            - 판단: 계획 대비 실제 시간이 짧았습니다.
+            - 근거: 핵심 흐름을 빠르게 정리했습니다.
+            - 다음 보정: 다음에는 검토 시간을 따로 잡아 보세요.
+
+            ## 작업 집중도의 밀도
+            - 판단: 핵심 흐름에 집중했습니다.
+            - 근거: 대화에 작업 전환이 없습니다.
+            - 다음 행동: 같은 흐름을 유지하세요.
+
+            ## 주요 경험
+            - 핵심 흐름을 정리했습니다.
+
+            ## 배운 점
+            - 검토 시간을 분리해야 합니다.
+
+            ## 다음 행동
+            - QMD 색인을 검토합니다.
+            """
+        ))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
         let recordsDirectory = directory.appendingPathComponent("work-records", isDirectory: true)
         let rawDirectory = recordsDirectory.appendingPathComponent("raw", isDirectory: true)
         let dateDirectory = try #require(
@@ -828,7 +917,7 @@ struct zileanTests {
         #expect(markdown.contains("elapsed_seconds: 90"))
         #expect(markdown.contains("duration_difference_seconds: -1410"))
         #expect(markdown.contains("conversation_context_status: recorded"))
-        #expect(markdown.contains("conversation_context_message_count: 2"))
+        #expect(markdown.contains("conversation_context_message_count: 3"))
         #expect(markdown.contains("### 1. 사용자"))
         #expect(markdown.contains("핵심 흐름을 정리했고 다음에는 QMD 색인을 검토한다."))
         #expect(markdown.contains("### 2. 어시스턴트"))
@@ -839,6 +928,253 @@ struct zileanTests {
         #expect(index.contains("집중도: 핵심 흐름에 집중했습니다."))
         #expect(log.contains("작업 기록 생성 · 작업 기록 저장"))
         #expect(viewModel.feedbackInsights(at: startedAt).completedWorkCount == 1)
+    }
+
+    @Test @MainActor func blocksNewWorkAndTimersWhileRetrospectiveIsActive() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        let previousWorkID = try #require(viewModel.activeWorkID)
+        await viewModel.createConversation()
+        _ = viewModel.startFocusTimer(taskTitle: "차단 확인", durationMinutes: 25)
+        await viewModel.completeFocusTimer()
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(viewModel.isRetrospectiveInProgress)
+        #expect(!viewModel.canCreateNewWork)
+        #expect(!viewModel.canCreateConversation)
+        #expect(viewModel.feedbackInsights().items.isEmpty)
+
+        await viewModel.createConversation()
+        #expect(client.startThreadCallCount == 2)
+
+        viewModel.selectWork(id: previousWorkID)
+        viewModel.draft = "과거 작업에서는 보내지지 않아야 합니다."
+        #expect(!viewModel.canSend)
+        viewModel.returnToPendingRetrospective()
+        #expect(viewModel.pendingRetrospectiveWorkID == viewModel.activeWorkID)
+        viewModel.draft = "회고로 돌아온 뒤에는 답변할 수 있습니다."
+        #expect(viewModel.canSend)
+
+        let directResponse = viewModel.startFocusTimer(
+            taskTitle: "새 타이머",
+            durationMinutes: 10
+        )
+        #expect(directResponse.errorCode == "retrospective_in_progress")
+
+        let protocolHandler = ZileanMCPProtocol(configurationDirectory: directory)
+        let request = try AppServerMessage(
+            data: Data(#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"start_focus_timer","arguments":{"taskTitle":"도구 타이머","durationMinutes":10}}}"#.utf8)
+        )
+        let response = try #require(protocolHandler.response(to: request))
+        let message = AppServerMessage(payload: response)
+        #expect(message.value(at: "result", "isError") == .bool(true))
+        #expect(
+            message.value(at: "result", "structuredContent", "errorCode")?.stringValue
+                == "retrospective_in_progress"
+        )
+    }
+
+    @Test @MainActor func restoresDraftAndResumesItsExistingThreadAfterRelaunch() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let firstClient = StubAppServerClient()
+        let firstViewModel = ConversationViewModel(
+            client: firstClient,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        await firstViewModel.connect()
+        firstViewModel.selectDirectory(directory)
+        await firstViewModel.createConversation()
+        _ = firstViewModel.startFocusTimer(taskTitle: "복원할 회고", durationMinutes: 25)
+        await firstViewModel.completeFocusTimer()
+        firstClient.onEvent?(.agentMessageDelta(itemID: "prompt", text: "무엇이 가장 어려웠나요?"))
+        firstClient.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        firstViewModel.draft = "범위를 정하는 판단이 어려웠어요."
+        await firstViewModel.sendMessage()
+        let draftBeforeAIResponse = try #require(
+            try RetrospectiveDraftStore(rootDirectory: directory).load()
+        )
+        #expect(draftBeforeAIResponse.stage == .responding)
+        #expect(
+            draftBeforeAIResponse.messages.map(\.text).contains("범위를 정하는 판단이 어려웠어요.")
+        )
+        firstClient.onEvent?(.agentMessageDelta(itemID: "reply", text: "범위를 좁힐 기준은 무엇이었나요?"))
+        firstClient.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        firstViewModel.shutdown()
+
+        let savedDraft = try #require(try RetrospectiveDraftStore(rootDirectory: directory).load())
+        #expect(savedDraft.stage == .ready)
+        #expect(savedDraft.messages.map(\.text).contains("범위를 정하는 판단이 어려웠어요."))
+
+        let restoredClient = StubAppServerClient()
+        restoredClient.resumeThreadError = TestError.preparationFailed
+        let restoredViewModel = ConversationViewModel(
+            client: restoredClient,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore
+        )
+
+        #expect(restoredViewModel.isRetrospectiveInProgress)
+        #expect(restoredViewModel.messages == savedDraft.messages)
+        await restoredViewModel.connect()
+        #expect(restoredViewModel.canRetryRetrospective)
+        #expect(RetrospectiveDraftStore(rootDirectory: directory).hasActiveDraft)
+
+        restoredClient.resumeThreadError = nil
+        await restoredViewModel.retryRetrospective()
+
+        #expect(restoredClient.resumedThreadIDs == [savedDraft.threadID, savedDraft.threadID])
+        #expect(restoredClient.startThreadCallCount == 0)
+        #expect(restoredViewModel.retrospectiveStatus == .prompted)
+        #expect(restoredViewModel.canFinishRetrospective)
+    }
+
+    @Test @MainActor func retriesSummaryGenerationThenRetriesOnlySaving() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let commandStore = ZileanMCPCommandStore(rootDirectory: directory)
+        let client = StubAppServerClient()
+        let workLogStore = FailOnceWorkLogStore()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: commandStore,
+            workLogStore: workLogStore
+        )
+
+        await viewModel.connect()
+        viewModel.selectDirectory(directory)
+        await viewModel.createConversation()
+        _ = viewModel.startFocusTimer(taskTitle: "단계별 재시도", durationMinutes: 25)
+        await viewModel.completeFocusTimer()
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        await viewModel.finishRetrospective()
+        client.onEvent?(.agentMessageDelta(itemID: "partial", text: "완성되지 않은 요약"))
+        client.onEvent?(.turnCompleted(status: .failed, errorMessage: "요약 실패"))
+        #expect(viewModel.retrospectiveStatus == .failed("요약 실패"))
+
+        await viewModel.retryRetrospective()
+        client.onEvent?(.agentMessageDelta(itemID: "summary", text: "## 주요 경험\n- 재시도 경계를 검증했습니다."))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+
+        #expect(workLogStore.saveCallCount == 1)
+        guard case .saveFailed = viewModel.retrospectiveStatus else {
+            Issue.record("첫 저장 실패가 saveFailed 상태로 남아야 합니다.")
+            return
+        }
+        let turnCountBeforeSaveRetry = client.startTurnTexts.count
+
+        await viewModel.retryRetrospective()
+
+        #expect(workLogStore.saveCallCount == 2)
+        #expect(client.startTurnTexts.count == turnCountBeforeSaveRetry)
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(!RetrospectiveDraftStore(rootDirectory: directory).hasActiveDraft)
+    }
+
+    @Test func workLogSaveIsIdempotentForTheSameRetrospectiveID() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let retrospectiveID = UUID()
+        let entry = WorkLogEntry(
+            retrospectiveID: retrospectiveID,
+            taskTitle: "중복 저장 방지",
+            plannedDurationMinutes: 25,
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            completedAt: Date(timeIntervalSince1970: 1_700_000_100),
+            retrospectiveFeedback: "## 작업 집중도의 밀도\n- 판단: 집중했습니다."
+        )
+        let store = WorkLogStore()
+
+        let firstURL = try store.save(entry, in: directory)
+        let secondURL = try store.save(entry, in: directory)
+
+        #expect(firstURL == secondURL)
+        let rawFiles = try FileManager.default.contentsOfDirectory(
+            at: firstURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        )
+        #expect(rawFiles.count == 1)
+        let marker = "<!-- retrospective-id: \(retrospectiveID.uuidString.lowercased()) -->"
+        let wikiDirectory = directory.appendingPathComponent("work-records/wiki")
+        let index = try String(
+            contentsOf: wikiDirectory.appendingPathComponent("index.md"),
+            encoding: .utf8
+        )
+        let log = try String(
+            contentsOf: wikiDirectory.appendingPathComponent("log.md"),
+            encoding: .utf8
+        )
+        #expect(index.components(separatedBy: marker).count - 1 == 1)
+        #expect(log.components(separatedBy: marker).count - 1 == 1)
+    }
+
+    @Test @MainActor func completesARecoveredSavingDraftWithoutRegeneratingSummary() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workID = UUID()
+        let retrospectiveID = UUID()
+        let completedAt = Date.now
+        let timer = FocusTimerSession(
+            id: retrospectiveID,
+            workID: workID,
+            taskTitle: "저장 중 복구",
+            durationMinutes: 25,
+            startedAt: completedAt.addingTimeInterval(-120),
+            status: .completed,
+            completedAt: completedAt
+        )
+        let summary = "## 주요 경험\n- 종료 처리 중 앱이 재실행됐습니다."
+        let draftStore = RetrospectiveDraftStore(rootDirectory: directory)
+        try draftStore.save(
+            RetrospectiveDraft(
+                id: retrospectiveID,
+                workID: workID,
+                threadID: "saved-thread",
+                directoryPath: directory.path,
+                title: timer.taskTitle,
+                workStartedAt: timer.startedAt,
+                workUpdatedAt: completedAt,
+                messages: [ConversationMessage(role: .agent, text: summary)],
+                timer: timer,
+                stage: .saving,
+                finalSummary: summary
+            )
+        )
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            timerCommandStore: ZileanMCPCommandStore(rootDirectory: directory)
+        )
+
+        await viewModel.connect()
+
+        #expect(viewModel.retrospectiveStatus == .answered)
+        #expect(!viewModel.isRetrospectiveInProgress)
+        #expect(!draftStore.hasActiveDraft)
+        #expect(client.resumedThreadIDs.isEmpty)
+        #expect(client.startTurnTexts.isEmpty)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent("work-records/wiki/index.md").path
+            )
+        )
     }
 
     @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
@@ -1023,6 +1359,12 @@ struct zileanTests {
         )
         await viewModel.completeFocusTimer(at: Date.now)
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
+        await viewModel.finishRetrospective()
+        client.onEvent?(.agentMessageDelta(
+            itemID: "feedback-source-summary",
+            text: "## 작업 집중도의 밀도\n- 판단: 집중했습니다."
+        ))
+        client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
         #expect(viewModel.canComposeFeedback)
         #expect(!viewModel.canSendFeedback)
@@ -1194,8 +1536,10 @@ private final class StubAppServerClient: CodexAppServerServing {
     var isConnected = false
     var onStartThread: ((URL) -> String?)?
     var startTurnError: Error?
+    var resumeThreadError: Error?
     private(set) var instructionsAtThreadStart: String?
     private(set) var startTurnTexts: [String] = []
+    private(set) var resumedThreadIDs: [String] = []
     private(set) var startThreadCallCount = 0
     private var nextThreadIndex = 0
 
@@ -1210,6 +1554,14 @@ private final class StubAppServerClient: CodexAppServerServing {
         return "thread-\(nextThreadIndex)"
     }
 
+    func resumeThread(id: String) async throws -> String {
+        resumedThreadIDs.append(id)
+        if let resumeThreadError {
+            throw resumeThreadError
+        }
+        return id
+    }
+
     func startTurn(threadID: String, text: String) async throws -> String {
         startTurnTexts.append(text)
         if let startTurnError {
@@ -1220,6 +1572,23 @@ private final class StubAppServerClient: CodexAppServerServing {
 
     func stop() {
         isConnected = false
+    }
+}
+
+private final class FailOnceWorkLogStore: WorkLogStoring {
+    private(set) var saveCallCount = 0
+    private let store = WorkLogStore()
+
+    func save(_ entry: WorkLogEntry, in workDirectory: URL) throws -> URL {
+        saveCallCount += 1
+        if saveCallCount == 1 {
+            throw TestError.preparationFailed
+        }
+        return try store.save(entry, in: workDirectory)
+    }
+
+    func loadFeedbackRecords(in workDirectory: URL) -> WorkLogLoadResult {
+        store.loadFeedbackRecords(in: workDirectory)
     }
 }
 
