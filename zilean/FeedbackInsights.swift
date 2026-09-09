@@ -2,14 +2,14 @@ import Foundation
 
 enum FeedbackPeriod: String, CaseIterable, Identifiable {
     case today
-    case thisWeek
+    case all
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .today: "오늘"
-        case .thisWeek: "이번 주"
+        case .all: "전체"
         }
     }
 
@@ -17,20 +17,65 @@ enum FeedbackPeriod: String, CaseIterable, Identifiable {
         switch self {
         case .today:
             return calendar.dateInterval(of: .day, for: date)!
-        case .thisWeek:
-            return calendar.dateInterval(of: .weekOfYear, for: date)!
+        case .all:
+            return DateInterval(start: .distantPast, end: .distantFuture)
         }
     }
 }
 
 struct FeedbackWorkItem: Identifiable, Equatable {
-    let work: WorkSession
-    let timer: FocusTimerSession
+    let record: FeedbackRecord
     let actualDuration: TimeInterval
 
-    var id: UUID { work.id }
-    var expectedDuration: TimeInterval { TimeInterval(timer.durationMinutes * 60) }
-    var difference: TimeInterval { actualDuration - expectedDuration }
+    var id: String { record.id }
+    var title: String { record.taskTitle }
+    var expectedDuration: TimeInterval? { record.plannedDuration }
+    var difference: TimeInterval? { expectedDuration.map { actualDuration - $0 } }
+}
+
+struct FeedbackRecord: Identifiable, Equatable {
+    let id: String
+    let taskTitle: String
+    let plannedDuration: TimeInterval?
+    let startedAt: Date
+    let completedAt: Date
+    let actualDuration: TimeInterval
+
+    init(
+        id: String,
+        taskTitle: String,
+        plannedDuration: TimeInterval?,
+        startedAt: Date,
+        completedAt: Date,
+        actualDuration: TimeInterval
+    ) {
+        self.id = id
+        self.taskTitle = taskTitle
+        self.plannedDuration = plannedDuration
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.actualDuration = actualDuration
+    }
+
+    init?(work: WorkSession) {
+        guard let timer = work.focusTimer,
+              timer.status == .completed,
+              let completedAt = timer.completedAt
+        else { return nil }
+
+        self.init(
+            id: "session-\(work.id.uuidString)",
+            taskTitle: work.title,
+            plannedDuration: TimeInterval(timer.durationMinutes * 60),
+            startedAt: timer.startedAt,
+            completedAt: completedAt,
+            actualDuration: timer.elapsed(at: completedAt)
+        )
+    }
+
+    var identity: String {
+        "\(taskTitle)\u{1F}\(Int(startedAt.timeIntervalSince1970))\u{1F}\(Int(completedAt.timeIntervalSince1970))\u{1F}\(plannedDuration ?? -1)"
+    }
 }
 
 struct FeedbackInsights: Equatable {
@@ -39,7 +84,7 @@ struct FeedbackInsights: Equatable {
     let items: [FeedbackWorkItem]
 
     init(
-        workSessions: [WorkSession],
+        records: [FeedbackRecord],
         period: FeedbackPeriod,
         now: Date = .now,
         calendar: Calendar = .current
@@ -47,19 +92,14 @@ struct FeedbackInsights: Equatable {
         self.period = period
         let selectedInterval = period.dateInterval(containing: now, calendar: calendar)
         interval = selectedInterval
-        items = workSessions.compactMap { work in
-            guard let timer = work.focusTimer,
-                  timer.status == .completed,
-                  let completedAt = timer.completedAt,
-                  selectedInterval.contains(completedAt)
-            else { return nil }
+        items = records.compactMap { record in
+            guard selectedInterval.contains(record.completedAt) else { return nil }
             return FeedbackWorkItem(
-                work: work,
-                timer: timer,
-                actualDuration: timer.elapsed(at: completedAt)
+                record: record,
+                actualDuration: record.actualDuration
             )
         }
-        .sorted { $0.timer.completedAt! > $1.timer.completedAt! }
+        .sorted { $0.record.completedAt > $1.record.completedAt }
     }
 
     var completedWorkCount: Int { items.count }
@@ -71,15 +111,18 @@ struct FeedbackInsights: Equatable {
     /// The average closeness of each completed task's actual duration to its plan.
     /// A task that takes exactly its estimate scores 100%; scores are clamped at 0%.
     var estimateAccuracy: Int? {
-        guard !items.isEmpty else { return nil }
-        let score = items.reduce(0.0) { partial, item in
-            let differenceRatio = abs(item.difference) / item.expectedDuration
+        let itemsWithPlan = items.filter { ($0.expectedDuration ?? 0) > 0 }
+        guard !itemsWithPlan.isEmpty else { return nil }
+        let score = itemsWithPlan.reduce(0.0) { partial, item in
+            let differenceRatio = abs(item.difference!) / item.expectedDuration!
             return partial + max(0, 1 - differenceRatio)
-        } / Double(items.count)
+        } / Double(itemsWithPlan.count)
         return Int((score * 100).rounded())
     }
 
     var periodDescription: String {
+        guard period != .all else { return "전체 기록" }
+
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ko_KR")
         formatter.calendar = Calendar.current
@@ -98,8 +141,9 @@ struct FeedbackInsights: Equatable {
         }
 
         let rows = items.map { item in
-            let difference = signedDurationDescription(item.difference)
-            return "- \(item.work.title): 예상 \(feedbackDurationDescription(item.expectedDuration)), 실제 \(feedbackDurationDescription(item.actualDuration)), 차이 \(difference)"
+            let difference = item.difference.map(signedDurationDescription) ?? "계산할 수 없음"
+            let planned = item.expectedDuration.map(feedbackDurationDescription) ?? "기록되지 않음"
+            return "- \(item.title): 예상 \(planned), 실제 \(feedbackDurationDescription(item.actualDuration)), 차이 \(difference)"
         }.joined(separator: "\n")
         let accuracy = estimateAccuracy.map { "\($0)%" } ?? "계산할 수 없음"
 

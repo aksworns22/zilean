@@ -101,7 +101,7 @@ final class ConversationViewModel: ObservableObject {
     @Published var draft = ""
     @Published private(set) var feedbackMessages: [ConversationMessage] = []
     @Published var feedbackDraft = ""
-    @Published private(set) var feedbackPeriod: FeedbackPeriod = .thisWeek
+    @Published private(set) var feedbackPeriod: FeedbackPeriod = .all
 
     private let client: CodexAppServerServing
     private let harnessPreparer: CodexHarnessPreparing
@@ -119,6 +119,9 @@ final class ConversationViewModel: ObservableObject {
     private var activeTurn: ActiveTurn?
     private var feedbackThreadID: String?
     private var activeFeedbackAgentItemID: String?
+    private var storedFeedbackRecords: [FeedbackRecord] = []
+    private var unreadableFeedbackRecordPaths: [String] = []
+    private var savedWorkIDs: Set<UUID> = []
 
     private enum ActiveTurn {
         case user
@@ -160,11 +163,15 @@ final class ConversationViewModel: ObservableObject {
             && !phase.isBusy
     }
 
-    var canSendFeedback: Bool {
-        !feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !feedbackInsights().items.isEmpty
+    var canComposeFeedback: Bool {
+        !feedbackInsights().items.isEmpty
             && client.isConnected
             && !phase.isBusy
+    }
+
+    var canSendFeedback: Bool {
+        canComposeFeedback
+            && !feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var canRetryConnection: Bool {
@@ -193,7 +200,20 @@ final class ConversationViewModel: ObservableObject {
     }
 
     func feedbackInsights(at now: Date = .now) -> FeedbackInsights {
-        FeedbackInsights(workSessions: workSessions, period: feedbackPeriod, now: now)
+        let currentRecords = workSessions
+            .filter {
+                $0.directory.standardizedFileURL == selectedDirectory?.standardizedFileURL
+                    && !savedWorkIDs.contains($0.id)
+            }
+            .compactMap(FeedbackRecord.init)
+        let storedIdentities = Set(storedFeedbackRecords.map(\.identity))
+        return FeedbackInsights(
+            records: storedFeedbackRecords + currentRecords.filter {
+                !storedIdentities.contains($0.identity)
+            },
+            period: feedbackPeriod,
+            now: now
+        )
     }
 
     convenience init() {
@@ -238,6 +258,7 @@ final class ConversationViewModel: ObservableObject {
         do {
             savedDirectory = try workDirectoryStore.savedDirectory()
             selectedDirectory = savedDirectory
+            refreshFeedbackRecords()
         } catch {
             workDirectoryStore.clear()
             directoryError = error.localizedDescription
@@ -267,11 +288,16 @@ final class ConversationViewModel: ObservableObject {
 
     @discardableResult
     func selectDirectory(_ directory: URL) -> Bool {
+        let previousDirectory = selectedDirectory?.standardizedFileURL
         selectedDirectory = directory.standardizedFileURL
         do {
             savedDirectory = try workDirectoryStore.save(directory)
             selectedDirectory = savedDirectory
             directoryError = nil
+            if previousDirectory != savedDirectory {
+                resetFeedbackConversation()
+            }
+            refreshFeedbackRecords()
             return true
         } catch {
             directoryError = error.localizedDescription
@@ -283,8 +309,13 @@ final class ConversationViewModel: ObservableObject {
     func useSavedDirectoryForNewWork() -> Bool {
         guard let savedDirectory else { return false }
         do {
+            let previousDirectory = selectedDirectory?.standardizedFileURL
             selectedDirectory = try workDirectoryStore.validatedDirectory(savedDirectory)
             directoryError = nil
+            if previousDirectory != selectedDirectory {
+                resetFeedbackConversation()
+            }
+            refreshFeedbackRecords()
             return true
         } catch {
             self.savedDirectory = nil
@@ -367,19 +398,18 @@ final class ConversationViewModel: ObservableObject {
     func selectFeedbackPeriod(_ period: FeedbackPeriod) {
         guard feedbackPeriod != period else { return }
         feedbackPeriod = period
-        feedbackDraft = ""
-        feedbackMessages = []
-        feedbackThreadID = nil
-        activeFeedbackAgentItemID = nil
+        resetFeedbackConversation()
     }
 
     func sendFeedbackMessage() async {
         let question = feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        refreshFeedbackRecords()
         let insights = feedbackInsights()
         guard !question.isEmpty,
               !phase.isBusy,
               client.isConnected,
-              let sourceWork = insights.items.first?.work
+              let selectedDirectory,
+              !insights.items.isEmpty
         else { return }
 
         feedbackDraft = ""
@@ -393,14 +423,18 @@ final class ConversationViewModel: ObservableObject {
             if let feedbackThreadID {
                 threadID = feedbackThreadID
             } else {
-                try harnessPreparer.prepare(in: sourceWork.directory)
-                let newThreadID = try await client.startThread(in: sourceWork.directory)
+                try harnessPreparer.prepare(in: selectedDirectory)
+                let newThreadID = try await client.startThread(in: selectedDirectory)
                 feedbackThreadID = newThreadID
                 threadID = newThreadID
             }
             _ = try await client.startTurn(
                 threadID: threadID,
-                text: try feedbackPrompt(insights: insights, question: question)
+                text: try feedbackPrompt(
+                    insights: insights,
+                    question: question,
+                    workDirectory: selectedDirectory
+                )
             )
         } catch {
             activeTurn = nil
@@ -415,7 +449,11 @@ final class ConversationViewModel: ObservableObject {
             skipPendingRetrospective()
         }
         activeWorkID = session.id
-        selectedDirectory = session.directory
+        if selectedDirectory?.standardizedFileURL != session.directory.standardizedFileURL {
+            selectedDirectory = session.directory
+            resetFeedbackConversation()
+            refreshFeedbackRecords()
+        }
         activeAgentItemID = nil
         draft = ""
         if client.isConnected {
@@ -750,9 +788,25 @@ final class ConversationViewModel: ObservableObject {
         ])
     }
 
-    private func feedbackPrompt(insights: FeedbackInsights, question: String) throws -> String {
-        try promptTemplateLoader.render(.feedback, values: [
-            "feedbackContext": insights.contextForFeedback,
+    private func feedbackPrompt(
+        insights: FeedbackInsights,
+        question: String,
+        workDirectory: URL
+    ) throws -> String {
+        let formatter = ISO8601DateFormatter()
+        let periodRange: String
+        if insights.period == .all {
+            periodRange = "저장된 전체 기록 (기간 경계 없음)"
+        } else {
+            periodRange = "\(formatter.string(from: insights.interval.start)) 포함 ~ \(formatter.string(from: insights.interval.end)) 제외"
+        }
+        return try promptTemplateLoader.render(.feedback, values: [
+            "workDirectory": workDirectory.path,
+            "periodRange": periodRange,
+            "feedbackStatistics": insights.contextForFeedback,
+            "unreadableRecordPaths": unreadableFeedbackRecordPaths.isEmpty
+                ? "없음"
+                : unreadableFeedbackRecordPaths.map { "- \($0)" }.joined(separator: "\n"),
             "question": question,
         ])
     }
@@ -823,6 +877,10 @@ final class ConversationViewModel: ObservableObject {
                 ),
                 in: work.directory
             )
+            savedWorkIDs.insert(work.id)
+            if work.directory.standardizedFileURL == selectedDirectory?.standardizedFileURL {
+                refreshFeedbackRecords()
+            }
             retrospectiveStatus = .answered
             pendingRetrospectiveTimer = nil
             pendingRetrospectiveAnswer = nil
@@ -849,6 +907,24 @@ final class ConversationViewModel: ObservableObject {
     private func failRetrospective(_ message: String) {
         retrospectiveStatus = .failed(message)
         phase = .failed(message)
+    }
+
+    private func refreshFeedbackRecords() {
+        guard let selectedDirectory else {
+            storedFeedbackRecords = []
+            unreadableFeedbackRecordPaths = []
+            return
+        }
+        let result = workLogStore.loadFeedbackRecords(in: selectedDirectory)
+        storedFeedbackRecords = result.records
+        unreadableFeedbackRecordPaths = result.unreadablePaths
+    }
+
+    private func resetFeedbackConversation() {
+        feedbackDraft = ""
+        feedbackMessages = []
+        feedbackThreadID = nil
+        activeFeedbackAgentItemID = nil
     }
 
     private var activeWorkIndex: Int? {

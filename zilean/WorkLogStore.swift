@@ -25,6 +25,11 @@ struct WorkLogEntry: Equatable {
     }
 }
 
+struct WorkLogLoadResult: Equatable {
+    let records: [FeedbackRecord]
+    let unreadablePaths: [String]
+}
+
 struct WorkLogStore {
     private let fileManager: FileManager
     private let calendar: Calendar
@@ -85,8 +90,94 @@ struct WorkLogStore {
         return rawDestination
     }
 
+    /// Reads only raw-record front matter for the feedback statistics. Wiki pages remain
+    /// available for the feedback agent to navigate independently.
+    func loadFeedbackRecords(in workDirectory: URL) -> WorkLogLoadResult {
+        let rawDirectory = workRecordsDirectory(in: workDirectory)
+            .appendingPathComponent("raw", isDirectory: true)
+        guard fileManager.fileExists(atPath: rawDirectory.path) else {
+            return WorkLogLoadResult(records: [], unreadablePaths: [])
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: rawDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return WorkLogLoadResult(records: [], unreadablePaths: [rawDirectory.path])
+        }
+
+        var records: [FeedbackRecord] = []
+        var unreadablePaths: [String] = []
+        for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
+            do {
+                let contents = try String(contentsOf: url, encoding: .utf8)
+                guard let record = feedbackRecord(from: contents, rawURL: url) else {
+                    unreadablePaths.append(url.path)
+                    continue
+                }
+                records.append(record)
+            } catch {
+                unreadablePaths.append(url.path)
+            }
+        }
+
+        return WorkLogLoadResult(
+            records: records.sorted { $0.completedAt > $1.completedAt },
+            unreadablePaths: unreadablePaths.sorted()
+        )
+    }
+
     private func workRecordsDirectory(in workDirectory: URL) -> URL {
         workDirectory.appendingPathComponent("work-records", isDirectory: true)
+    }
+
+    private func feedbackRecord(from contents: String, rawURL: URL) -> FeedbackRecord? {
+        guard let frontMatter = frontMatter(in: contents),
+              let taskTitle = frontMatter["task_title"],
+              let startedAt = date(from: frontMatter["started_at"]),
+              let completedAt = date(from: frontMatter["completed_at"]),
+              let elapsedSeconds = Double(frontMatter["elapsed_seconds"] ?? "")
+        else { return nil }
+
+        let plannedSeconds = Double(frontMatter["planned_focus_seconds"] ?? "")
+            ?? Double(frontMatter["planned_focus_minutes"] ?? "").map { $0 * 60 }
+        return FeedbackRecord(
+            id: rawURL.standardizedFileURL.path,
+            taskTitle: taskTitle,
+            plannedDuration: plannedSeconds.map { max(0, $0) },
+            startedAt: startedAt,
+            completedAt: completedAt,
+            actualDuration: max(0, elapsedSeconds)
+        )
+    }
+
+    private func frontMatter(in contents: String) -> [String: String]? {
+        let lines = contents.components(separatedBy: .newlines)
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+              let closingIndex = lines.dropFirst().firstIndex(where: {
+                  $0.trimmingCharacters(in: .whitespaces) == "---"
+              })
+        else { return nil }
+
+        return lines[1..<closingIndex].reduce(into: [:]) { metadata, line in
+            guard let separator = line.firstIndex(of: ":") else { return }
+            let key = line[..<separator].trimmingCharacters(in: .whitespaces)
+            var value = String(line[line.index(after: separator)...])
+                .trimmingCharacters(in: .whitespaces)
+            if value.first == "\"", let data = value.data(using: .utf8),
+               let decoded = try? JSONDecoder().decode(String.self, from: data) {
+                value = decoded
+            }
+            metadata[key] = value
+        }
+    }
+
+    private func date(from value: String?) -> Date? {
+        guard let value else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func dateDirectoryName(for date: Date) -> String {
