@@ -403,9 +403,12 @@ struct zileanTests {
             contentsOf: wikiDirectory.appendingPathComponent("SCHEMA.md"),
             encoding: .utf8
         )
+        let loadedRecords = store.loadFeedbackRecords(in: directory)
 
         #expect(firstURL.path.hasSuffix("work-records/raw/2026-08-22/DART-공시-초안.md"))
         #expect(secondURL.lastPathComponent == "DART-공시-초안-2.md")
+        #expect(loadedRecords.records.count == 2)
+        #expect(loadedRecords.records.map(\.taskTitle) == ["DART / 공시: 초안", "DART / 공시: 초안"])
         #expect(markdown.contains("task_title: \"DART / 공시: 초안\""))
         #expect(markdown.contains("planned_focus_minutes: 25"))
         #expect(markdown.contains("elapsed_seconds: 75"))
@@ -453,6 +456,73 @@ struct zileanTests {
         #expect(markdown.contains("conversation_context_status: unavailable"))
         #expect(markdown.contains("conversation_context_message_count: 0"))
         #expect(markdown.contains("저장된 대화가 없습니다."))
+    }
+
+    @Test func restoresFeedbackMetadataFromSavedRawRecords() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let completedAt = Date(timeIntervalSince1970: 1_790_000_000)
+        let rawURL = try WorkLogStore().save(
+            WorkLogEntry(
+                taskTitle: "같은 이름의 작업",
+                plannedDurationMinutes: 25,
+                startedAt: completedAt.addingTimeInterval(-90),
+                completedAt: completedAt
+            ),
+            in: directory
+        )
+
+        let result = WorkLogStore().loadFeedbackRecords(in: directory)
+
+        #expect(result.unreadablePaths.isEmpty)
+        #expect(result.records.count == 1)
+        #expect(result.records[0].id == rawURL.standardizedFileURL.path)
+        #expect(result.records[0].taskTitle == "같은 이름의 작업")
+        #expect(result.records[0].plannedDuration == 1_500)
+        #expect(result.records[0].actualDuration == 90)
+    }
+
+    @Test @MainActor func sendsWikiNavigationPromptForRecordsRestoredAfterRelaunch() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let now = Date.now
+        try WorkLogStore().save(
+            WorkLogEntry(
+                taskTitle: "위키 우선 작업",
+                plannedDurationMinutes: 25,
+                startedAt: now.addingTimeInterval(-300),
+                completedAt: now,
+                conversation: [ConversationMessage(role: .user, text: "원본에만 있는 정확한 표현")],
+                retrospectiveFeedback: "## 작업 집중도의 밀도\n- 판단: 위키에만 있는 요약"
+            ),
+            in: directory
+        )
+        let suiteName = "FeedbackRestoreTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let directoryStore = WorkDirectoryStore(userDefaults: defaults)
+        _ = try directoryStore.save(directory)
+        let client = StubAppServerClient()
+        let viewModel = ConversationViewModel(
+            client: client,
+            harnessPreparer: StubHarnessPreparer(),
+            workDirectoryStore: directoryStore
+        )
+
+        await viewModel.connect()
+        #expect(viewModel.feedbackInsights().completedWorkCount == 1)
+        viewModel.feedbackDraft = "무엇을 개선하면 좋을까?"
+        await viewModel.sendFeedbackMessage()
+
+        let prompt = try #require(client.startTurnTexts.last)
+        #expect(prompt.contains("work-records/wiki/SCHEMA.md"))
+        #expect(prompt.contains("work-records/wiki/index.md"))
+        #expect(prompt.contains("선택 기간 시작(포함)"))
+        #expect(prompt.contains("선택 기간 끝(제외)"))
+        #expect(prompt.contains("위키 우선 작업"))
+        #expect(prompt.contains("무엇을 개선하면 좋을까?"))
+        #expect(!prompt.contains("원본에만 있는 정확한 표현"))
+        #expect(!prompt.contains("위키에만 있는 요약"))
     }
 
     @Test @MainActor func startsFocusTimerFromPendingMCPCommand() async throws {
@@ -506,43 +576,35 @@ struct zileanTests {
         calendar.firstWeekday = 2
         let referenceDate = Date(timeIntervalSince1970: 1_787_097_600) // 2026-08-22 12:00 UTC
 
-        func work(
+        func record(
             title: String,
             plannedMinutes: Int,
             completedAt: Date,
             elapsedMinutes: Int
-        ) -> WorkSession {
-            let id = UUID()
-            let timer = FocusTimerSession(
-                workID: id,
+        ) -> FeedbackRecord {
+            FeedbackRecord(
+                id: UUID().uuidString,
                 taskTitle: title,
-                durationMinutes: plannedMinutes,
+                plannedDuration: TimeInterval(plannedMinutes * 60),
                 startedAt: completedAt.addingTimeInterval(TimeInterval(-elapsedMinutes * 60)),
-                status: .completed,
-                completedAt: completedAt
-            )
-            return WorkSession(
-                id: id,
-                threadID: id.uuidString,
-                directory: URL(fileURLWithPath: "/tmp/\(id.uuidString)"),
-                title: title,
-                focusTimer: timer
+                completedAt: completedAt,
+                actualDuration: TimeInterval(elapsedMinutes * 60)
             )
         }
 
-        let included = work(
+        let included = record(
             title: "API 연동 문서화",
             plannedMinutes: 60,
             completedAt: referenceDate.addingTimeInterval(-86_400),
             elapsedMinutes: 90
         )
-        let exact = work(
+        let exact = record(
             title: "DART 공시 작업",
             plannedMinutes: 60,
             completedAt: referenceDate.addingTimeInterval(-172_800),
             elapsedMinutes: 60
         )
-        let outsidePeriod = work(
+        let outsidePeriod = record(
             title: "지난 주 작업",
             plannedMinutes: 30,
             completedAt: referenceDate.addingTimeInterval(-604_800),
@@ -550,7 +612,7 @@ struct zileanTests {
         )
 
         let insights = FeedbackInsights(
-            workSessions: [included, exact, outsidePeriod],
+            records: [included, exact, outsidePeriod],
             period: .thisWeek,
             now: referenceDate,
             calendar: calendar
@@ -559,11 +621,11 @@ struct zileanTests {
         #expect(insights.completedWorkCount == 2)
         #expect(insights.totalFocusDuration == 9_000)
         #expect(insights.estimateAccuracy == 75)
-        #expect(insights.items.map(\.work.title) == ["API 연동 문서화", "DART 공시 작업"])
+        #expect(insights.items.map(\.title) == ["API 연동 문서화", "DART 공시 작업"])
     }
 
     @Test func feedbackInsightsShowsAnEmptyStateForPeriodsWithoutCompletedWork() {
-        let insights = FeedbackInsights(workSessions: [], period: .today)
+        let insights = FeedbackInsights(records: [], period: .today)
 
         #expect(insights.completedWorkCount == 0)
         #expect(insights.totalFocusDuration == 0)
@@ -776,6 +838,7 @@ struct zileanTests {
         #expect(index.contains("계획 25분"))
         #expect(index.contains("집중도: 핵심 흐름에 집중했습니다."))
         #expect(log.contains("작업 기록 생성 · 작업 기록 저장"))
+        #expect(viewModel.feedbackInsights(at: startedAt).completedWorkCount == 1)
     }
 
     @Test @MainActor func startsFocusTimerFromDirectSetup() async throws {
@@ -1070,13 +1133,18 @@ struct zileanTests {
 
     @Test func rendersPromptTemplateWithDynamicValues() throws {
         let prompt = try BundlePromptTemplateLoader().render(.feedback, values: [
-            "feedbackContext": "- 피드백 대상 작업: 자료 정리",
+            "workDirectory": "/tmp/records",
+            "periodStart": "2026-09-01T00:00:00Z",
+            "periodEnd": "2026-09-02T00:00:00Z",
+            "feedbackStatistics": "- 피드백 대상 작업: 자료 정리",
+            "unreadableRecordPaths": "없음",
             "question": "다음에는 어떻게 할까?",
         ])
 
         #expect(prompt.contains("피드백 대상 작업: 자료 정리"))
         #expect(prompt.contains("사용자 질문: 다음에는 어떻게 할까?"))
-        #expect(!prompt.contains("{{feedbackContext}}"))
+        #expect(!prompt.contains("{{workDirectory}}"))
+        #expect(!prompt.contains("{{feedbackStatistics}}"))
         #expect(!prompt.contains("{{question}}"))
     }
 

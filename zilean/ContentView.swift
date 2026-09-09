@@ -1185,7 +1185,7 @@ private struct FeedbackWorkRow: View {
 
     var body: some View {
         HStack(spacing: 18) {
-            Text(item.work.title)
+            Text(item.title)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(DesignPalette.sidebarActiveText)
                 .lineLimit(1)
@@ -1193,11 +1193,18 @@ private struct FeedbackWorkRow: View {
             Spacer(minLength: 20)
 
             HStack(spacing: 14) {
-                labelledDuration("예상", value: feedbackDurationDescription(item.expectedDuration))
+                labelledDuration(
+                    "예상",
+                    value: item.expectedDuration.map(feedbackDurationDescription) ?? "–"
+                )
                 labelledDuration("실제", value: feedbackDurationDescription(item.actualDuration))
-                Text(signedDurationDescription(item.difference))
+                Text(item.difference.map(signedDurationDescription) ?? "–")
                     .font(.callout.weight(.bold))
-                    .foregroundStyle(item.difference > 0 ? DesignPalette.feedbackAccent : DesignPalette.timerSetupMutedText)
+                    .foregroundStyle(
+                        (item.difference ?? 0) > 0
+                            ? DesignPalette.feedbackAccent
+                            : DesignPalette.timerSetupMutedText
+                    )
                     .frame(minWidth: 48, alignment: .trailing)
             }
         }
