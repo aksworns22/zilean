@@ -7,8 +7,7 @@
 - 저장 폴더: `{{workDirectory}}`
 - 위키: `{{workDirectory}}/work-records/wiki/`
 - 원본 기록: `{{workDirectory}}/work-records/raw/`
-- 선택 기간 시작(포함): `{{periodStart}}`
-- 선택 기간 끝(제외): `{{periodEnd}}`
+- 선택 범위: `{{periodRange}}`
 
 통계용 메타데이터는 이미 별도로 집계되었다. 이 수치는 선택 기간의 완료 기록만 포함하며, 위키·원문을 읽어 다시 합산하거나 바꾸지 마라.
 

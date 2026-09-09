@@ -101,7 +101,7 @@ final class ConversationViewModel: ObservableObject {
     @Published var draft = ""
     @Published private(set) var feedbackMessages: [ConversationMessage] = []
     @Published var feedbackDraft = ""
-    @Published private(set) var feedbackPeriod: FeedbackPeriod = .thisWeek
+    @Published private(set) var feedbackPeriod: FeedbackPeriod = .all
 
     private let client: CodexAppServerServing
     private let harnessPreparer: CodexHarnessPreparing
@@ -790,10 +790,15 @@ final class ConversationViewModel: ObservableObject {
         workDirectory: URL
     ) throws -> String {
         let formatter = ISO8601DateFormatter()
+        let periodRange: String
+        if insights.period == .all {
+            periodRange = "저장된 전체 기록 (기간 경계 없음)"
+        } else {
+            periodRange = "\(formatter.string(from: insights.interval.start)) 포함 ~ \(formatter.string(from: insights.interval.end)) 제외"
+        }
         return try promptTemplateLoader.render(.feedback, values: [
             "workDirectory": workDirectory.path,
-            "periodStart": formatter.string(from: insights.interval.start),
-            "periodEnd": formatter.string(from: insights.interval.end),
+            "periodRange": periodRange,
             "feedbackStatistics": insights.contextForFeedback,
             "unreadableRecordPaths": unreadableFeedbackRecordPaths.isEmpty
                 ? "없음"

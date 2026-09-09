@@ -517,8 +517,8 @@ struct zileanTests {
         let prompt = try #require(client.startTurnTexts.last)
         #expect(prompt.contains("work-records/wiki/SCHEMA.md"))
         #expect(prompt.contains("work-records/wiki/index.md"))
-        #expect(prompt.contains("선택 기간 시작(포함)"))
-        #expect(prompt.contains("선택 기간 끝(제외)"))
+        #expect(prompt.contains("선택 범위"))
+        #expect(prompt.contains("저장된 전체 기록"))
         #expect(prompt.contains("위키 우선 작업"))
         #expect(prompt.contains("무엇을 개선하면 좋을까?"))
         #expect(!prompt.contains("원본에만 있는 정확한 표현"))
@@ -570,7 +570,7 @@ struct zileanTests {
         #expect(viewModel.recentWorkSessions.first?.focusTimer?.elapsed(at: startedAt.addingTimeInterval(60)) == 6)
     }
 
-    @Test func summarizesOnlyCompletedWorkInTheSelectedPeriod() {
+    @Test func summarizesAllCompletedWorkWhenAllRecordsIsSelected() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         calendar.firstWeekday = 2
@@ -613,15 +613,15 @@ struct zileanTests {
 
         let insights = FeedbackInsights(
             records: [included, exact, outsidePeriod],
-            period: .thisWeek,
+            period: .all,
             now: referenceDate,
             calendar: calendar
         )
 
-        #expect(insights.completedWorkCount == 2)
-        #expect(insights.totalFocusDuration == 9_000)
-        #expect(insights.estimateAccuracy == 75)
-        #expect(insights.items.map(\.title) == ["API 연동 문서화", "DART 공시 작업"])
+        #expect(insights.completedWorkCount == 3)
+        #expect(insights.totalFocusDuration == 10_800)
+        #expect(insights.estimateAccuracy == 83)
+        #expect(insights.items.map(\.title) == ["API 연동 문서화", "DART 공시 작업", "지난 주 작업"])
     }
 
     @Test func feedbackInsightsShowsAnEmptyStateForPeriodsWithoutCompletedWork() {
@@ -1134,8 +1134,7 @@ struct zileanTests {
     @Test func rendersPromptTemplateWithDynamicValues() throws {
         let prompt = try BundlePromptTemplateLoader().render(.feedback, values: [
             "workDirectory": "/tmp/records",
-            "periodStart": "2026-09-01T00:00:00Z",
-            "periodEnd": "2026-09-02T00:00:00Z",
+            "periodRange": "저장된 전체 기록 (기간 경계 없음)",
             "feedbackStatistics": "- 피드백 대상 작업: 자료 정리",
             "unreadableRecordPaths": "없음",
             "question": "다음에는 어떻게 할까?",

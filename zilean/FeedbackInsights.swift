@@ -2,14 +2,14 @@ import Foundation
 
 enum FeedbackPeriod: String, CaseIterable, Identifiable {
     case today
-    case thisWeek
+    case all
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .today: "오늘"
-        case .thisWeek: "이번 주"
+        case .all: "전체"
         }
     }
 
@@ -17,8 +17,8 @@ enum FeedbackPeriod: String, CaseIterable, Identifiable {
         switch self {
         case .today:
             return calendar.dateInterval(of: .day, for: date)!
-        case .thisWeek:
-            return calendar.dateInterval(of: .weekOfYear, for: date)!
+        case .all:
+            return DateInterval(start: .distantPast, end: .distantFuture)
         }
     }
 }
@@ -121,6 +121,8 @@ struct FeedbackInsights: Equatable {
     }
 
     var periodDescription: String {
+        guard period != .all else { return "전체 기록" }
+
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ko_KR")
         formatter.calendar = Calendar.current
