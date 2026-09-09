@@ -163,11 +163,15 @@ final class ConversationViewModel: ObservableObject {
             && !phase.isBusy
     }
 
-    var canSendFeedback: Bool {
-        !feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !feedbackInsights().items.isEmpty
+    var canComposeFeedback: Bool {
+        !feedbackInsights().items.isEmpty
             && client.isConnected
             && !phase.isBusy
+    }
+
+    var canSendFeedback: Bool {
+        canComposeFeedback
+            && !feedbackDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var canRetryConnection: Bool {

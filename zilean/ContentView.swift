@@ -369,7 +369,7 @@ struct ContentView: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...4)
                 .padding(.vertical, 7)
-                .disabled(!viewModel.canSendFeedback && viewModel.feedbackDraft.isEmpty)
+                .disabled(!viewModel.canComposeFeedback)
                 .onSubmit(sendFeedbackMessage)
 
                 Button(action: sendFeedbackMessage) {

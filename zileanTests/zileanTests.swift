@@ -1024,7 +1024,10 @@ struct zileanTests {
         await viewModel.completeFocusTimer(at: Date.now)
         client.onEvent?(.turnCompleted(status: .completed, errorMessage: nil))
 
+        #expect(viewModel.canComposeFeedback)
+        #expect(!viewModel.canSendFeedback)
         viewModel.feedbackDraft = "다음에는 시간을 어떻게 잡으면 좋을까?"
+        #expect(viewModel.canSendFeedback)
         await viewModel.sendFeedbackMessage()
 
         let prompt = try #require(client.startTurnTexts.last)
